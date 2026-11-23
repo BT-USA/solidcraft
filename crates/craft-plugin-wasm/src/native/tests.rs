@@ -1158,6 +1158,110 @@ fn an_importer_trap_or_runaway_loop_fails_that_one_call_and_the_next_call_works(
     assert_eq!(import(&slow, root.join("loop.smp"), false).unwrap_err(), HostError::Exhausted { limit: "deadline_ms".into(), allowed: 50 });
     std::fs::remove_dir_all(root).unwrap();
 }
+/// Runs `check` with every compile on this thread made by `tier`'s compiler, bypassing the cache.
+fn on_tier(tier: Tier, check: impl FnOnce()) {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            FORCED_TIER.with(|forced| forced.set(None));
+        }
+    }
+    let _reset = Reset;
+    FORCED_TIER.with(|forced| forced.set(Some(tier)));
+    check();
+}
+#[test]
+fn fuel_memory_the_deadline_and_cancel_stop_plugins_under_both_compilers() {
+    for tier in [Tier::Baseline, Tier::Optimized] {
+        on_tier(tier, || {
+            for (code, diagnostic) in [
+                ("call $box (loop $forever br $forever)", "used all 100000 fuel it asks for and was stopped"),
+                ("call $box i32.const 10000 memory.grow drop", "needed more than the 1 MiB of memory it asks for and was stopped"),
+            ] {
+                let failure = run(&mut App::default(), &manifest(), &component(code), "make", &json!({})).unwrap_err();
+                assert!(failure.to_string().contains(diagnostic), "{tier:?} {code}: {failure}");
+            }
+            let root = import_folder(&[("loop.smp", b"L"), ("fine.smp", b"fine")]);
+            let manifest = importer_manifest(false);
+            let fuel = import(&manifest, root.join("loop.smp"), false).unwrap_err();
+            assert_eq!(fuel, HostError::Exhausted { limit: "fuel".into(), allowed: 10_000_000 }, "{tier:?}");
+            assert_eq!(import(&manifest, root.join("fine.smp"), false).unwrap().design, b"fine", "{tier:?}");
+            let mut slow = importer_manifest(false);
+            let limits = &mut slow.runtime.as_mut().unwrap().limits;
+            (limits.fuel, limits.deadline_ms) = (1 << 40, 50);
+            let deadline = import(&slow, root.join("loop.smp"), false).unwrap_err();
+            assert_eq!(deadline, HostError::Exhausted { limit: "deadline_ms".into(), allowed: 50 }, "{tier:?}");
+            std::fs::remove_dir_all(root).unwrap();
+            let mut cancelled = App { cancelled: true, ..Default::default() };
+            assert_eq!(
+                run(&mut cancelled, &super::tests::manifest(), &component("(loop br 0)"), "make", &json!({})).unwrap_err(),
+                HostError::Cancelled
+            );
+        });
+    }
+}
+/// The cached code's compiler, if the cache holds `bytes`.
+fn cached_tier(bytes: &[u8]) -> Option<Tier> {
+    cache().compiled.lock().unwrap().as_ref().filter(|cached| cached.bytes.as_ref() == bytes).map(|cached| cached.tier)
+}
+#[test]
+fn imports_never_wait_for_the_cranelift_swap_and_give_the_same_design_before_and_after() {
+    let root = import_folder(&[("bracket.smp", b"design bytes")]);
+    let manifest = importer_manifest(false);
+    let component = importer_component();
+    // Hold the background compile back: every import below runs while it has not finished.
+    let gate = cache().gate.lock().unwrap();
+    let first = import_with(&component, &manifest, root.join("bracket.smp"), false).unwrap();
+    assert_eq!(cached_tier(&component), Some(Tier::Baseline));
+    // The first import started the Cranelift compile; a second one now finds it running.
+    assert!(cache().optimizing.load(Ordering::Acquire));
+    assert!(optimize_in_background().is_none());
+    let during = import_with(&component, &manifest, root.join("bracket.smp"), false).unwrap();
+    assert_eq!(cached_tier(&component), Some(Tier::Baseline));
+    drop(gate);
+    while cache().optimizing.load(Ordering::Acquire) {
+        std::thread::yield_now();
+    }
+    assert_eq!(cached_tier(&component), Some(Tier::Optimized));
+    let after = import_with(&component, &manifest, root.join("bracket.smp"), false).unwrap();
+    for imported in [&first, &during, &after] {
+        assert_eq!((imported.design.as_slice(), imported.report.summary.as_str()), (&b"design bytes"[..], "Copied the file"));
+    }
+    // Already Cranelift's: nothing more to compile.
+    assert!(optimize_in_background().is_none());
+    std::fs::remove_dir_all(root).unwrap();
+}
+#[test]
+fn a_late_cranelift_compile_never_replaces_another_components_code() {
+    let stack_bytes = 512 * 1024;
+    let first: Arc<[u8]> = Arc::from(importer_component());
+    let (engine, component) = compile_with(&first, stack_bytes, Tier::Baseline).unwrap();
+    *cache().compiled.lock().unwrap() =
+        Some(Compiled { bytes: first, stack_bytes, engine: engine.clone(), component: component.clone(), tier: Tier::Baseline });
+    let gate = cache().gate.lock().unwrap();
+    let worker = optimize_in_background().unwrap();
+    // Another component (the same bytes in another allocation stand in for one) takes the cache
+    // while the first one's Cranelift compile waits.
+    let second: Arc<[u8]> = Arc::from(importer_component());
+    *cache().compiled.lock().unwrap() = Some(Compiled { bytes: second.clone(), stack_bytes, engine, component, tier: Tier::Baseline });
+    drop(gate);
+    worker.join().unwrap();
+    let cached = cache().compiled.lock().unwrap();
+    let cached = cached.as_ref().unwrap();
+    assert_eq!((cached.tier, Arc::ptr_eq(&cached.bytes, &second)), (Tier::Baseline, true));
+}
+#[test]
+fn a_component_winch_refuses_is_compiled_with_cranelift_and_runs() {
+    // Relaxed SIMD is one of the proposals Wasmtime's Winch does not compile.
+    let code = "call $box v128.const i64x2 0 0 v128.const i64x2 0 0 v128.const i64x2 0 0 f32x4.relaxed_madd drop";
+    let bytes = component(code);
+    assert!(compile_with(&bytes, 512 * 1024, Tier::Baseline).is_err());
+    let (_, _, tier) = compile_fresh(&bytes, 512 * 1024).unwrap();
+    assert_eq!(tier, Tier::Optimized);
+    run(&mut App::default(), &manifest(), &bytes, "make", &json!({})).unwrap();
+    assert_eq!(cached_tier(&bytes), Some(Tier::Optimized));
+    crate::check_component(&manifest(), &bytes).unwrap();
+}
 #[test]
 fn an_importer_says_a_valid_file_is_not_supported() {
     let root = import_folder(&[("sketch.smp", b"U"), ("broken.smp", b"I")]);

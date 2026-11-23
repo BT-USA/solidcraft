@@ -12,7 +12,7 @@ use std::io::{Read, Write};
 use std::path::{Component as PathComponent, Path, PathBuf};
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     mpsc,
 };
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -1094,7 +1094,7 @@ pub(super) fn check_component(manifest: &Manifest, bytes: &[u8], options: Runtim
         return Err(component_error("this is a core WebAssembly module, not a component"));
     }
     let importer = runtime.is_importer();
-    let (engine, component) = compile_with(bytes, stack_bytes(&runtime.limits, options, importer || runtime.is_exporter())?)?;
+    let (engine, component, _) = compile_fresh(bytes, stack_bytes(&runtime.limits, options, importer || runtime.is_exporter())?)?;
     let wit = check_imports(&engine, &component)?;
     let link = |e: wasmtime::Error| component_error(format!("{e:#}"));
     let hook = check_dialog_export(manifest, &engine, &component)?;
@@ -1129,25 +1129,149 @@ pub(super) fn check_component(manifest: &Manifest, bytes: &[u8], options: Runtim
     Ok(())
 }
 
-type Compiled = (Arc<[u8]>, usize, Engine, Component);
-/// The most recently compiled component. Compiling a large importer takes tens of seconds; keeping
-/// the compiled code in memory (never on disk, which would need unsafe deserialization) lets the
-/// next file open at once. Every call still gets a fresh instance and store.
-static COMPILED: Mutex<Option<Compiled>> = Mutex::new(None);
+/// Which of Wasmtime's compilers made a component's code. Both run the same sandbox: fuel, epoch
+/// interruption, the stack limit and the store limits hold under either.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Tier {
+    /// Winch, Wasmtime's baseline compiler. For a 55 MB importer it compiled about 18 times faster
+    /// than Cranelift with about a third of the peak memory, and its code ran up to half as fast.
+    Baseline,
+    /// Cranelift, Wasmtime's optimising compiler.
+    Optimized,
+}
 
-fn compile(bytes: &[u8], stack_bytes: usize) -> Result<(Engine, Component)> {
-    if let Ok(cache) = COMPILED.lock()
-        && let Some((cached, stack, engine, component)) = cache.as_ref()
-        && *stack == stack_bytes
-        && cached.as_ref() == bytes
-    {
-        return Ok((engine.clone(), component.clone()));
+struct Compiled {
+    bytes: Arc<[u8]>,
+    stack_bytes: usize,
+    engine: Engine,
+    component: Component,
+    tier: Tier,
+}
+/// The most recently compiled component, and whether a background thread is compiling it with
+/// Cranelift. Keeping the compiled code in memory (never on disk, which would need unsafe
+/// deserialization) lets the next call start at once. Every call still gets a fresh instance and store.
+struct Cache {
+    compiled: Mutex<Option<Compiled>>,
+    optimizing: AtomicBool,
+    /// Tests hold this to keep the background compile from starting until they let it.
+    #[cfg(test)]
+    gate: Mutex<()>,
+}
+impl Cache {
+    const fn new() -> Self {
+        Self {
+            compiled: Mutex::new(None),
+            optimizing: AtomicBool::new(false),
+            #[cfg(test)]
+            gate: Mutex::new(()),
+        }
     }
-    let (engine, component) = compile_with(bytes, stack_bytes)?;
-    if let Ok(mut cache) = COMPILED.lock() {
-        *cache = Some((Arc::from(bytes), stack_bytes, engine.clone(), component.clone()));
+}
+#[cfg(not(test))]
+static CACHE: Cache = Cache::new();
+
+/// The process's cache; in tests, one per test thread, so tests running side by side don't share one.
+fn cache() -> &'static Cache {
+    #[cfg(test)]
+    {
+        thread_local! {
+            static OWN: &'static Cache = Box::leak(Box::new(Cache::new()));
+        }
+        OWN.with(|cache| *cache)
+    }
+    #[cfg(not(test))]
+    {
+        &CACHE
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests that must run on one compiler's code set this; the cache is then left alone.
+    static FORCED_TIER: std::cell::Cell<Option<Tier>> = const { std::cell::Cell::new(None) };
+}
+
+/// The component's code, from the cache when it holds these bytes. Otherwise Winch compiles it, so
+/// the first call waits about a second rather than the tens of seconds Cranelift takes for a large
+/// importer; [`optimize_in_background`] later swaps in Cranelift's faster code.
+fn compile(bytes: &[u8], stack_bytes: usize) -> Result<(Engine, Component)> {
+    #[cfg(test)]
+    if let Some(tier) = FORCED_TIER.with(std::cell::Cell::get) {
+        return compile_with(bytes, stack_bytes, tier);
+    }
+    let cache = cache();
+    if let Ok(compiled) = cache.compiled.lock()
+        && let Some(cached) = compiled.as_ref()
+        && cached.stack_bytes == stack_bytes
+        && cached.bytes.as_ref() == bytes
+    {
+        return Ok((cached.engine.clone(), cached.component.clone()));
+    }
+    let (engine, component, tier) = compile_fresh(bytes, stack_bytes)?;
+    if let Ok(mut compiled) = cache.compiled.lock() {
+        *compiled = Some(Compiled { bytes: Arc::from(bytes), stack_bytes, engine: engine.clone(), component: component.clone(), tier });
     }
     Ok((engine, component))
+}
+
+/// Winch first; Cranelift when Winch refuses the component (a WebAssembly feature it lacks on
+/// this processor) or anything else goes wrong, so a component runs wherever it ran before.
+fn compile_fresh(bytes: &[u8], stack_bytes: usize) -> Result<(Engine, Component, Tier)> {
+    match compile_with(bytes, stack_bytes, Tier::Baseline) {
+        Ok((engine, component)) => Ok((engine, component, Tier::Baseline)),
+        Err(error) => {
+            ::log::debug!(target: "craft_plugin_wasm", "baseline compile refused the component, using Cranelift: {error}");
+            compile_with(bytes, stack_bytes, Tier::Optimized).map(|(engine, component)| (engine, component, Tier::Optimized))
+        }
+    }
+}
+
+/// When the cached component is Winch's, compiles it again with Cranelift on a background thread
+/// and swaps that in when it is done, so later calls run at full speed. Calls meanwhile keep using
+/// Winch's code and never wait. Started after a call finishes, so the compile does not compete with
+/// it. A failure keeps Winch's code, which works.
+pub(super) fn optimize_in_background() -> Option<std::thread::JoinHandle<()>> {
+    let cache = cache();
+    let (bytes, stack_bytes) = match cache.compiled.lock() {
+        Ok(cached) => match cached.as_ref() {
+            Some(cached) if cached.tier == Tier::Baseline => (cached.bytes.clone(), cached.stack_bytes),
+            _ => return None,
+        },
+        Err(_) => return None,
+    };
+    let busy = &cache.optimizing;
+    if busy.swap(true, Ordering::AcqRel) {
+        return None;
+    }
+    /// Clears `busy` however the thread ends.
+    struct Idle(&'static AtomicBool);
+    impl Drop for Idle {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::Release);
+        }
+    }
+    let idle = Idle(busy);
+    let spawned = std::thread::Builder::new().name("plugin-optimize".into()).spawn(move || {
+        let _idle = idle;
+        #[cfg(test)]
+        let _gate = cache.gate.lock();
+        // On one thread: slower, but it leaves the other cores to the app and peaks at far less
+        // memory than a compile spread over every core (5 GB for a 55 MB importer).
+        match compile_on(&bytes, stack_bytes, Tier::Optimized, false) {
+            Ok((engine, component)) => {
+                if let Ok(mut cached) = cache.compiled.lock()
+                    && let Some(cached) = cached.as_mut()
+                    && Arc::ptr_eq(&cached.bytes, &bytes)
+                    && cached.stack_bytes == stack_bytes
+                {
+                    (cached.engine, cached.component, cached.tier) = (engine, component, Tier::Optimized);
+                }
+            }
+            Err(error) => ::log::debug!(target: "craft_plugin_wasm", "background Cranelift compile failed; keeping the baseline code: {error}"),
+        }
+    });
+    // A thread that could not start drops `idle` with the closure, clearing `busy`.
+    spawned.ok()
 }
 
 /// The parser exposes limit failures as messages rather than a public error kind.
@@ -1199,11 +1323,21 @@ fn check_outer_interfaces(bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// Compiles `bytes` under the host's configuration, without the cache.
-fn compile_with(bytes: &[u8], stack_bytes: usize) -> Result<(Engine, Component)> {
+/// Compiles `bytes` under the host's configuration with `tier`'s compiler, without the cache.
+fn compile_with(bytes: &[u8], stack_bytes: usize, tier: Tier) -> Result<(Engine, Component)> {
+    compile_on(bytes, stack_bytes, tier, true)
+}
+
+/// [`compile_with`], on every core or on the calling thread alone.
+fn compile_on(bytes: &[u8], stack_bytes: usize, tier: Tier, parallel: bool) -> Result<(Engine, Component)> {
     check_outer_interfaces(bytes)?;
     let mut config = Config::new();
+    config.parallel_compilation(parallel);
     config.consume_fuel(true).epoch_interruption(true).wasm_memory64(false).wasm_multi_memory(false).max_wasm_stack(stack_bytes);
+    config.strategy(match tier {
+        Tier::Baseline => wasmtime::Strategy::Winch,
+        Tier::Optimized => wasmtime::Strategy::Cranelift,
+    });
     // Wasmtime refuses a Wasm stack larger than its async stack, even for synchronous calls.
     config.async_stack_size(stack_bytes.saturating_add(1 << 20));
     let engine = Engine::new(&config).map_err(|e| trap(e.to_string()))?;

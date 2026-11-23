@@ -271,6 +271,11 @@ previously approved package. Desktop results prepared under changed ceilings, gr
 are discarded rather than adopted into the current design. Settings survive new/open design
 operations and scratch copies, but are never serialized as design data.
 
+A component is compiled in memory: first with Winch, Wasmtime's baseline compiler, which compiles
+a large component in about a second; after that call, again with Cranelift on one background thread,
+whose faster code replaces it for later calls. A component Winch refuses is compiled with Cranelift
+straight away. Fuel and epoch interruption are the same under both compilers.
+
 Fuel and epoch checks contain guest execution, not arbitrary native work. Component compilation
 happens before the guest deadline; its input size is bounded, but compiler memory/time are not
 covered by guest fuel. Each approved native command runs under its existing engine/kernel limits;
@@ -290,7 +295,7 @@ Normal command output and plugin result JSON are unchanged. The counter message 
 model data or package paths.
 
 Plugins install from a `.zip` with `plugin.install` (see [Plugins](plugins.md#installing)).
-There is no compiled-code cache, unsafe deserialization, WASI filesystem/clock/socket/process API,
+There is no compiled-code cache on disk, unsafe deserialization, WASI filesystem/clock/socket/process API,
 network integration, persistent guest store, signed index, custom panels or plugin-supplied icons.
 A plugin keeps data in a design through the `storage.*` commands, not a WIT interface of its own.
 `manifest()` is not used.

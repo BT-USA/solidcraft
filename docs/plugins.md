@@ -913,6 +913,11 @@ Only an importer may say `open`.
   could not open bracket.smp: ...", or "Sample does not support bracket.smp: ..." for
   `unsupported`), and the next one gets a fresh instance. The compiled component stays in memory, so the next file opens
   without compiling again; nothing compiled is written to disk.
+- **First file in a session.** The first call compiles the component with Wasmtime's quick
+  baseline compiler (Winch), so a large importer starts in a second or two rather than half a
+  minute. Once that call is done, the optimising compiler (Cranelift) compiles it again on one
+  background thread and later files use its faster code; until then they use the first code, so
+  nothing waits for it. Fuel, memory, the deadline and Cancel hold the same under both.
 - **Limits.** An importer's component may be up to 64 MiB, its deadline up to 10 minutes, and its
   `stack_kib` up to 64 MiB (a command may ask for at most 1 MiB). Its fuel has to fit the user's ceiling in Preferences › Plugins, and
   its memory too unless the user approved more at install. Build it for `wasm32-unknown-unknown` and wrap it with
