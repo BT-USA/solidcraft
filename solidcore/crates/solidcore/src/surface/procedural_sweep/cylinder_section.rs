@@ -10,10 +10,11 @@
 //! intersection is those iso curves, clipped to the cylinder face's heights; on the wall each is a
 //! straight line of its parameters.
 //!
-//! The cases taken: a live screw sweep with no radial law (a law moves the profile off its
-//! radius as it turns), a cylinder whose axis is the screw's within `tolerance` over the wall's
-//! reach, whose face goes round the whole turn, and profile crossings of the radius that are
-//! transversal. Anything else is `None`, and the general intersection runs as before.
+//! The cases taken: a screw sweep (live, or its label) of at least a whole turn with no radial
+//! law (a law moves the profile off its radius as it turns), a cylinder whose axis is the
+//! screw's within a thousandth of `tolerance` over the wall's reach, whose face and surface go
+//! round the whole turn, and a profile of straight spans that crosses the radius inside them.
+//! Anything else is `None`, and the general intersection runs as before.
 //!
 //! Deviations: none (no upstream counterpart). No recursion; the work is bounded: the roots in
 //! closed form per profile span, [`SAMPLES`] evaluations and [`BISECTIONS`] steps per clip, and
@@ -30,6 +31,7 @@ use crate::nurbs::b_spline_curve::BSplineCurve;
 use crate::nurbs::b_spline_curve_n_lib::TrimMode;
 use crate::nurbs::b_spline_surface::BSplineSurface;
 use crate::nurbs::b_spline_surface::{IsoCurveOptions, SurfParamType};
+use crate::nurbs::b_spline_surface_n_lib::p2::EvaluateFlags;
 use crate::surface::cone::Cone;
 use crate::surface::surface::p2::{SurfaceIntersection, TsectCurveType};
 use crate::surface::surface::Surface;
@@ -57,16 +59,25 @@ pub(crate) fn intersect(
     k: &Kernel,
     wall: (&ProceduralSweep, &BSplineSurface),
     domain: &Extent2d,
-    cylinder: &Cone,
-    other: &Surface,
+    (cylinder, other): (&Cone, &Surface),
     other_domain: &Extent2d,
     tolerance: f64,
+    wall_first: bool,
 ) -> Result<Option<SurfaceIntersection>> {
     let (sweep, net) = wall;
     let Motion::Screw(m) = sweep.motion() else {
         return Ok(None);
     };
     if m.law().is_some() || !cylinder.is_cylinder() || !(tolerance > 0.0) {
+        return Ok(None);
+    }
+    // A wall that turns less than a whole turn is a piece of a thread built in half-turn faces,
+    // the construction designs saved before continuous flanks still name their faces by: it keeps
+    // the general intersection, so those faces come out in the order the names were saved for.
+    let (Some(&first), Some(&last)) = (sweep.stations().first(), sweep.stations().last()) else {
+        return Ok(None);
+    };
+    if !(last - first >= std::f64::consts::TAU) {
         return Ok(None);
     }
     let natural = net.natural_uv_domain();
@@ -116,6 +127,23 @@ pub(crate) fn intersect(
     if roots.is_empty() {
         return Ok(None);
     }
+    // The side the cylinder's natural normal faces: out of the axis (+1) or into it (-1).
+    let cylinder_side = {
+        let d = other.evaluate(k, other_domain.min(), 1, 1, EvaluateFlags::default())?;
+        let (Some(p), Some(du), Some(dv)) = (
+            d.first().and_then(|r| r.first()).copied(),
+            d.get(1).and_then(|r| r.first()).copied(),
+            d.first().and_then(|r| r.get(1)).copied(),
+        ) else {
+            return Ok(None);
+        };
+        let r = (p - c_origin) - c_axis * (p - c_origin).dot(c_axis);
+        let side = du.cross(dv).dot(r);
+        if !(side.abs() > 0.0) {
+            return Ok(None);
+        }
+        side.signum()
+    };
     let mut result = SurfaceIntersection::default();
     for p0 in roots {
         let residual = gap(p0)?.abs();
@@ -192,21 +220,54 @@ pub(crate) fn intersect(
                 return Ok(None);
             };
             let rounding = 64.0 * f64::EPSILON * (reach + h_hi.abs().max(h_lo.abs()));
-            let stretch_3d = iso.curve.natural_interval();
-            result.curves_3d.push(Curve::from(iso.curve));
-            result.curve_types.push(TsectCurveType::Crossing);
-            result
-                .deviations
-                .push(residual.max(off_radius) + 2.0 * ARC_SLACK * radius + misaligned + rounding);
+            // Each curve runs along the cross product of the first surface's normal and the
+            // second's, as the general intersection's do: the boolean reads its sides from that.
+            let mid = 0.5 * (qa + qb);
+            let uv_mid = if swapped {
+                Point2::new(mid, p0)
+            } else {
+                Point2::new(p0, mid)
+            };
+            let d = net.evaluate(uv_mid, 1, 1, EvaluateFlags::default())?;
+            let (Some(du), Some(dv)) = (
+                d.get(1).and_then(|r| r.first()).copied(),
+                d.first().and_then(|r| r.get(1)).copied(),
+            ) else {
+                return Ok(None);
+            };
+            let tangent = if swapped { du } else { dv };
+            let at = net.evaluate_point(uv_mid)? - c_origin;
+            let out = at - c_axis * at.dot(c_axis);
+            let n_cyl = out * (cylinder_side / out.length());
+            let n_wall = du.cross(dv);
+            let along = if wall_first {
+                n_wall.cross(n_cyl)
+            } else {
+                n_cyl.cross(n_wall)
+            };
+            let mut curve_3d = Curve::from(iso.curve);
             // The wall's line, on the piece's own stretch, as the 3D curve is.
-            let uv = match iso.uv_iso_curve {
+            let mut uv = match iso.uv_iso_curve {
                 Some(mut line) => {
-                    let mut stretch = stretch_3d;
+                    let mut stretch = curve_3d.natural_interval();
                     line.trim(k, &mut stretch, TrimMode::Notify)?;
                     Some(line)
                 }
                 None => None,
             };
+            if tangent.dot(along) < 0.0 {
+                let stretch = curve_3d.natural_interval();
+                curve_3d.reverse_parameterization(k, &stretch)?;
+                if let Some(line) = uv.as_mut() {
+                    let stretch = line.natural_interval();
+                    line.reverse_parameterization(k, &stretch)?;
+                }
+            }
+            result.curves_3d.push(curve_3d);
+            result.curve_types.push(TsectCurveType::Crossing);
+            result
+                .deviations
+                .push(residual.max(off_radius) + 2.0 * ARC_SLACK * radius + misaligned + rounding);
             result.surface1_uv_curves.push(uv);
             result.surface2_uv_curves.push(None);
         }

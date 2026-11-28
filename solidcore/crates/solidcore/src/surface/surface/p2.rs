@@ -4318,14 +4318,26 @@ impl Surface {
                 screw_wall(other),
                 self.kind(),
             ) {
-                (Some(wall), SurfaceKind::Cone(c), _, _) => {
-                    screw_section(k, wall, uv_domain, c, other, other_uv_domain, tolerance)
-                        .map(|r| r.map(|r| (r, false)))
-                }
-                (_, _, Some(wall), SurfaceKind::Cone(c)) => {
-                    screw_section(k, wall, other_uv_domain, c, self, uv_domain, tolerance)
-                        .map(|r| r.map(|r| (r, true)))
-                }
+                (Some(wall), SurfaceKind::Cone(c), _, _) => screw_section(
+                    k,
+                    wall,
+                    uv_domain,
+                    (c, other),
+                    other_uv_domain,
+                    tolerance,
+                    true,
+                )
+                .map(|r| r.map(|r| (r, false))),
+                (_, _, Some(wall), SurfaceKind::Cone(c)) => screw_section(
+                    k,
+                    wall,
+                    other_uv_domain,
+                    (c, self),
+                    uv_domain,
+                    tolerance,
+                    false,
+                )
+                .map(|r| r.map(|r| (r, true))),
                 _ => Ok(None),
             };
             if let Some((mut section, reversed)) = native_failure(swept)?.flatten() {
