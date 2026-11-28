@@ -142,9 +142,10 @@ these rules:
 
 - adapters depend on `kernel-api` and their own kernel, never on `crates/kernel` or on each other;
 - only `crates/kernel` depends on adapters;
-- only `crates/kernel-solidcore` depends on solidcore crates, the record included (§3, §10). Until
-  then, `xtask/kernel-coupling.txt` freezes every app crate's solidcore dependencies and references,
-  so they only fall.
+- only `crates/kernel-solidcore` depends on solidcore crates, the record included (§3, §10), once
+  stage 5 of §12 is done. Until then, the kernel-coupling ratchet (`xtask/kernel-coupling.txt`,
+  added in stage 0) freezes every app crate's solidcore dependencies and references, so they only
+  fall.
 
 ---
 
@@ -1307,7 +1308,9 @@ The owner approved them on 2026-11-26. Each step follows the rules at the top of
     - `git mv` the solidcore code of `crates/kernel`, together with all of `crates/smlib`, into
       `crates/kernel-solidcore`, leaving `crates/kernel` as the router with the same public API.
     - `xtask layers` switches to the end-state rule (§10). From here, only the adapter depends on
-      solidcore crates.
+      solidcore crates beyond `solidcore-record`. Until stage 5 of the decoupling stages (above),
+      `solidcore-record` stays allowed where `xtask/kernel-coupling.txt` lists it, so this step
+      lands on its own whichever comes first.
     - This is the only large diff in the series, and it is purely mechanical: moves and paths,
       with the same functions.
 11. **Sweep and loft in the trait.** `PathSeg` and `SweepControl` carry geometry of their own
