@@ -6,6 +6,7 @@
 | Started | 2026-11-07 |
 | Apps | SolidCraft, CamCraft, PCBCraft |
 | Discussion | the pull request that adds this file, then an issue per phase |
+| Revised by | RFC 0020 for CAM and additive ([link](0020-manufacture-workspace.md)) |
 
 Nothing here is built yet.
 
