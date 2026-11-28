@@ -1882,7 +1882,7 @@ fn join_touching(regions: Vec<NumberedRegion>, tol: f64) -> Result<(Vec<Numbered
         return Ok((regions, false));
     }
     // A line is cut where another line along it starts or ends.
-    let lines: Vec<(Vec2, Vec2)> = pieces.iter().filter(|(s, _)| matches!(s, Seg2::Line { .. })).map(|(s, _)| (s.start(), s.end())).collect();
+    let ends: Vec<Vec2> = pieces.iter().filter(|(s, _)| matches!(s, Seg2::Line { .. })).flat_map(|(s, _)| [s.start(), s.end()]).collect();
     let mut cut: Vec<(Seg2, Vec<usize>)> = Vec::with_capacity(pieces.len());
     for (seg, from) in &pieces {
         let Seg2::Line { a, b } = *seg else {
@@ -1890,20 +1890,7 @@ fn join_touching(regions: Vec<NumberedRegion>, tol: f64) -> Result<(Vec<Numbered
             continue;
         };
         let d = b - a;
-        let len = d.len();
-        let mut ts: Vec<f64> = Vec::new();
-        if len > tol {
-            for (p, q) in &lines {
-                for v in [p, q] {
-                    let t = (*v - a).dot(d) / (len * len);
-                    if t * len > tol && (1.0 - t) * len > tol && (*v - a).cross(d).abs() <= tol * len {
-                        ts.push(t);
-                    }
-                }
-            }
-        }
-        ts.sort_by(f64::total_cmp);
-        ts.dedup_by(|x, y| (*x - *y).abs() * len <= tol);
+        let ts = solidcore_ops::line_split::points_along_segment(a, b, &ends, tol);
         let mut last = a;
         for t in ts.into_iter().chain(std::iter::once(1.0)) {
             let next = if t >= 1.0 { b } else { a + d * t };
