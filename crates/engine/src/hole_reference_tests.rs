@@ -480,3 +480,41 @@ fn a_hole_whose_reference_edges_share_no_face_can_be_mirrored_and_patterned() {
         wide_bore_at(&s, 140.0, y);
     }
 }
+
+#[test]
+fn a_copied_hole_on_a_chamfer_hinge_keeps_the_face_it_was_drilled_into() {
+    // #23504 review: a 40 mm plate whose x = 200 top edge has a 30 mm chamfer, so the top face
+    // and the chamfer meet along x = 170. A Ø20 hole is placed with its centre on that line, 150
+    // mm from the wall top's edge and 30 mm from the top's back edge, drilled down with a Ø40 × 90°
+    // countersink. Replayed, its centre is in the opening and both the top and the chamfer lie in
+    // planes through it; the top's rim is 20 mm away but the chamfer, below it where the
+    // countersink narrows, only about 14.1 mm. The copy must still be measured in the top's plane:
+    // in the chamfer's plane the distance to the wall's edge reads about 12.6 mm longer and the
+    // copy would move.
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length": 200, "width": 140, "height": 40, "corner": [0, -70, 0]}));
+    run(&mut s, "solid.box", json!({"length": 20, "width": 140, "height": 120, "corner": [0, -70, 0], "operation": "join", "targets": ["Body1"]}));
+    run(&mut s, "solid.chamfer", json!({"edges": [[200, 0, 40]], "distance": 30}));
+    run(
+        &mut s,
+        "solid.hole",
+        json!({
+            "position": [150, 40, 40],
+            "diameter": 20,
+            "depth": 40,
+            "type": "countersink",
+            "cs_diameter": 40,
+            "cs_angle": 90,
+            "name": "H",
+            "references": [{"edge": [20, 0, 120], "distance": 150}, {"edge": [100, 70, 40], "distance": 30}]
+        }),
+    );
+    wide_bore_at(&s, 170.0, 40.0);
+    run(&mut s, "solid.mirror", json!({"plane": "XZ", "features": ["H"], "name": "M"}));
+    wide_bore_at(&s, 170.0, -40.0);
+    run(&mut s, "edit.undo", json!({}));
+    run(&mut s, "solid.pattern.rectangular", json!({"features": ["H"], "dir1": [0, -1, 0], "count1": "3", "spacing1": "45", "name": "P"}));
+    for y in [40.0, -5.0, -50.0] {
+        wide_bore_at(&s, 170.0, y);
+    }
+}
