@@ -3008,16 +3008,23 @@ impl ChordArc {
 /// stays a cap over its chord when its radius grows.
 fn chord_arcs(sk: &Sketch, lay: &Layout, x: &[f64]) -> Vec<ChordArc> {
     let state = State { sk, lay, x };
+    // The arcs a driving radius or diameter sizes, in one pass over the constraints: the scan
+    // runs on every solve, and a sketch may hold tens of thousands of curves and constraints.
+    let mut sized: Vec<usize> = Vec::new();
+    for k in sk.constraints.iter().filter(|k| !k.driven) {
+        match k.kind {
+            ConstraintKind::Radius { c, .. } | ConstraintKind::Diameter { c, .. } => sized.push(c),
+            _ => {}
+        }
+    }
+    sized.sort_unstable();
+    sized.dedup();
     let mut out = Vec::new();
     for (arc, curve) in sk.curves.iter().enumerate() {
-        let CurveKind::Arc { c, a, b } = curve.kind else { continue };
-        let sized = sk
-            .constraints
-            .iter()
-            .any(|k| !k.driven && matches!(k.kind, ConstraintKind::Radius { c: cc, .. } | ConstraintKind::Diameter { c: cc, .. } if cc == arc));
-        if !sized {
+        if sized.binary_search(&arc).is_err() {
             continue;
         }
+        let CurveKind::Arc { c, a, b } = curve.kind else { continue };
         let (centre, radius) = state.round(arc);
         let (pa, pb) = (state.p(a), state.p(b));
         let Some(chord) = (pb - pa).normalized() else { continue };
@@ -4248,7 +4255,7 @@ fn solve_inner(
         rank += comp_rank;
         // More rows than rank: some constraint may be implied by the others.
         if analysis == Analysis::Full && r.len() > comp_rank && vars.len() <= redundancy::MAX_REDUNDANCY_VARS {
-            let (dependent, _) = redundancy::dependent_blocks(sk, &lay, &sub, vars, &mut x, None);
+            let (dependent, _) = redundancy::dependent_blocks(sk, &lay, &sub, vars, &mut x, lifted.as_deref_mut(), None);
             for ((b, _), d) in sub.iter().zip(dependent) {
                 if d && let Some(c) = redundancy::block_constraint(b).and_then(|ci| sk.constraints.get(ci))
                     && !redundant.contains(&c.id)
