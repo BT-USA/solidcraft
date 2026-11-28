@@ -12,7 +12,7 @@ use crate::schema::frame::SketchSolve;
 use crate::schema::sketch::{
     AxisAlignParams, CoincidentMade, CoincidentParams, CoincidentResult, CollinearParams, ConcentricParams, Constrained, ConstraintResult,
     EditParams, EditResult, EqualMade, EqualParams, EqualResult, ExitParams, FixOutcome, FixParams, FixResult, HorizontalVerticalParams,
-    MidpointParams, ParallelParams, PerpendicularParams, SymmetryParams, SymmetryResult, TangentMade, TangentParams, TangentResult,
+    MidpointParams, ParallelParams, PerpendicularParams, SymmetryMode, SymmetryParams, SymmetryResult, TangentMade, TangentParams, TangentResult,
 };
 use crate::schema::sketch_dimension::{DimensionResult, SketchDimensionParams};
 use crate::schema::sketch_dimensioned::{DrawDimensionedParams, DrawDimensionedResult};
@@ -368,7 +368,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .from_selection(super::sketch_selection::symmetry)
         .contract(&SYMMETRY_CONTRACT)
         .output(output_schema_for::<SymmetryResult>)
-        .params(concat!("a, b: two points or two curves (lines mirror their ends, circles/arcs their centres); line: symmetry line id, or x / y for the sketch's own axes (a curve with that id wins; an axis becomes a linked construction line on it, reported in created); or point (or a point id as line, \"origin\" too): symmetric about that point, each pair joined by a construction line it is the midpoint of", model_operand_doc!())),
+        .params(concat!("a, b: two points or two curves (circles/arcs mirror their centres); mode?: endpoints (default) mirrors line ends, lines mirrors two supporting lines about an axis and leaves their ends free to slide; line: symmetry line id, or x / y for the sketch's own axes (a curve with that id wins; an axis becomes a linked construction line on it, reported in created); or point (or a point id as line, \"origin\" too): symmetric about that point, each pair joined by a construction line it is the midpoint of", model_operand_doc!())),
     CommandSpec::new("sketch.constraint.horizontal", "Horizontal", crate::checked!("sketch.constraint.horizontal", c_horizontal))
         .in_sketch_part()
         .at("SKETCH", "CONSTRAINTS")
@@ -773,6 +773,10 @@ pub(super) fn wire_collapse(before: &Sketch, after: &Sketch) -> Option<String> {
     thrown.then(|| "that would throw 3D points of the sketch far away: its 3D constraints have no solution near the sketch as it is".to_string())
 }
 
+fn shrank_to_point(before: f64, after: f64) -> bool {
+    before > 1e-3 && after < 1e-5
+}
+
 /// The first line or circle that solving `before` into `after` shrank to a point: longer (or
 /// wider) than 1e-3 before and shorter than 1e-5 after. A length a dimension asks for is never
 /// that short. 1e-6 let a side squeezed to 1.2e-6 by one solve through, and the next solve
@@ -784,7 +788,7 @@ fn shrunk(before: &Sketch, after: &Sketch) -> Option<String> {
         _ => None,
     };
     (0..before.curves.len().min(after.curves.len()))
-        .find(|&i| matches!((size(before, i), size(after, i)), (Some(b), Some(a)) if b > 1e-3 && a < 1e-5))
+        .find(|&i| matches!((size(before, i), size(after, i)), (Some(b), Some(a)) if shrank_to_point(b, a)))
         .and_then(|i| after.curves.get(i).map(|c| c.id.clone()))
 }
 
@@ -3282,21 +3286,39 @@ fn keep_size(sk: &Sketch, e: Ent) -> Vec<ConstraintKind> {
 /// `new` are the ids of the constraints the command just added: the refusal names the
 /// constraints the new one conflicts with, never the new one's own id (#9735).
 pub(super) fn apply_in_order(sk: &mut Sketch, rep: &SolveReport, first: &[Ent], second: Ent, cmd: &str, new: &[String]) -> Result<()> {
+    apply_in_order_with_size(sk, rep, first, second, cmd, new, true)
+}
+
+fn apply_in_order_with_size(
+    sk: &mut Sketch,
+    rep: &SolveReport,
+    first: &[Ent],
+    second: Ent,
+    cmd: &str,
+    new: &[String],
+    keep_size_first: bool,
+) -> Result<()> {
     let second_locked = ent_locked(sk, rep, second);
     // (held geometry, temporary size constraints) to try in turn.
     let mut tries: Vec<(Hold, Vec<ConstraintKind>)> = Vec::new();
+    let mut add_tries = |sized: Hold, free_size: Hold, mover: Ent| {
+        let mut pair = [(sized, keep_size(sk, mover)), (free_size, Vec::new())];
+        if !keep_size_first {
+            pair.reverse();
+        }
+        tries.extend(pair);
+    };
     let mut ordered = |stay: &[Ent], mover: Ent| {
-        let mut h = hold_of(sk, stay, true);
+        let free_size = hold_of(sk, stay, true);
+        let mut h = free_size.clone();
         h.radii.extend(hold_of(sk, &[mover], true).radii);
-        tries.push((h.clone(), keep_size(sk, mover)));
-        tries.push((hold_of(sk, stay, true), Vec::new()));
+        add_tries(h.clone(), free_size, mover);
         // An end point the two share may slide (a line tangent to an arc it ends on, whose
         // centre is pinned, has to turn about its other end).
         let shared = hold_of(sk, &[mover], false).points;
         if h.points.iter().any(|p| shared.contains(p)) {
             h.points.retain(|p| !shared.contains(p));
-            tries.push((h.clone(), keep_size(sk, mover)));
-            tries.push((h, Vec::new()));
+            add_tries(h.clone(), h, mover);
         }
     };
     if !second_locked {
@@ -3320,7 +3342,10 @@ pub(super) fn apply_in_order(sk: &mut Sketch, rep: &SolveReport, first: &[Ent], 
         }));
         let ok = solve_with(&mut trial, &h, None, Analysis::StatusOnly, None).ok();
         trial.constraints.retain(|c| c.id != TEMP);
-        if ok && !collapsed(sk, &trial) && !flung(sk, &trial) {
+        // A supporting-line constraint may legitimately shorten a segment by a large
+        // fraction when it projects almost side-on.
+        let degenerate = if keep_size_first { collapsed(sk, &trial) } else { shrunk(sk, &trial).is_some() };
+        if ok && !degenerate && !flung(sk, &trial) {
             *sk = trial;
             return Ok(());
         }
@@ -4276,9 +4301,20 @@ fn arc_end(sk: &Sketch, c: usize, q: usize) -> bool {
 
 fn c_symmetry(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "sketch.constraint.symmetry";
+    let mode = SymmetryMode::read(p.get("mode")).map_err(|err| bad(cmd, err))?;
     let p = &super::sketch_project::project_operands(s, p, cmd, &["a", "b", "line", "point"])?;
     let (ids, info) = edit(s, p, cmd, true, |sk, _| {
-        if let Some(c) = symmetry_center(sk, p, cmd)? {
+        let center = symmetry_center(sk, p, cmd)?;
+        if matches!(mode, SymmetryMode::Lines) {
+            if center.is_some() {
+                return Err(bad(cmd, "lines mode needs a symmetry line or sketch axis"));
+            }
+            let a = curve_ref(sk, p.get("a"), cmd, "a")?;
+            let b = curve_ref(sk, p.get("b"), cmd, "b")?;
+            let l = line_or_axis_ref(sk, p.get("line"), cmd, "line")?;
+            return symmetry_lines(sk, a, b, l, cmd);
+        }
+        if let Some(c) = center {
             return symmetry_about_point(sk, p, c, cmd);
         }
         let l = line_or_axis_ref(sk, p.get("line"), cmd, "line")?;
@@ -4319,6 +4355,103 @@ fn c_symmetry(s: &mut Session, p: &Value) -> Result<Value> {
         Ok(out)
     })?;
     reply(cmd, SymmetryResult { constraints: ids, sketch: info, param_warnings: Vec::new() })
+}
+
+/// Mirror the supporting lines. Keep the first line and the axis where possible.
+fn symmetry_lines(sk: &mut Sketch, a: usize, b: usize, l: usize, cmd: &str) -> Result<Vec<String>> {
+    let mut before = sk.clone();
+    let id = add_c(sk, ConstraintKind::SymmetricLines { a, b, l })?;
+    // Already mirrored lines can both be fixed, leaving no geometry for the ordered solve to move.
+    if residual_of(sk, &id).is_some_and(|r| r > solidcraft_sketch::CONSISTENT) {
+        let rep = solve(&mut before);
+        let b_locked = ent_locked(sk, &rep, Ent::Curve(b));
+        let seed = if b_locked && ent_locked(sk, &rep, Ent::Curve(a)) {
+            seed_symmetry_axis(sk, &rep, a, b, l)
+        } else {
+            let (source, mover) = if b_locked { (b, a) } else { (a, b) };
+            seed_perpendicular_symmetry(sk, &rep, source, mover, l)
+        };
+        if let Some(trial) = seed {
+            *sk = trial;
+        } else {
+            let first = [Ent::Curve(a), Ent::Curve(l)];
+            apply_in_order_with_size(sk, &rep, &first, Ent::Curve(b), cmd, std::slice::from_ref(&id), false)?;
+        }
+    }
+    Ok(vec![id])
+}
+
+/// When both closest projections nearly coincide, seed a turn that keeps the line's size.
+/// The held solve still has to satisfy the sketch's other constraints.
+fn seed_perpendicular_symmetry(sk: &Sketch, rep: &SolveReport, a: usize, b: usize, l: usize) -> Option<Sketch> {
+    let (a0, a1) = line_pts(sk, a)?;
+    let (o, e) = line_pts(sk, l)?;
+    let (b0, b1) = line_pts(sk, b)?;
+    let axis = (e - o).normalized()?;
+    let reflect = |v: Vec2| axis * (2.0 * v.dot(axis)) - v;
+    let direction = reflect(a1 - a0).normalized()?;
+    let projection = direction.dot(b1 - b0).abs();
+    if projection > solidcraft_geom::EPS && !shrank_to_point(b0.dist(b1), projection) {
+        return None;
+    }
+    let hold = hold_of(sk, &[Ent::Curve(a), Ent::Curve(l)], false);
+    seed_line_on(sk, rep, b, &hold, o + reflect(a0 - o), direction)
+}
+
+/// When both line supports are fixed, the movable axis lies on a bisector. Seeding it avoids
+/// a stationary solve when the reflection starts at right angles to its target.
+fn seed_symmetry_axis(sk: &Sketch, rep: &SolveReport, a: usize, b: usize, l: usize) -> Option<Sketch> {
+    let (a0, a1) = line_pts(sk, a)?;
+    let (b0, b1) = line_pts(sk, b)?;
+    let (l0, l1) = line_pts(sk, l)?;
+    let u = (a1 - a0).normalized()?;
+    let v = (b1 - b0).normalized()?;
+    let cross = u.cross(v);
+    let (anchor, directions) = if cross.abs() <= solidcraft_geom::EPS {
+        // Parallel supports have a parallel midline. Coincident supports also admit a
+        // perpendicular axis through any point, so use the projection of the axis midpoint.
+        let mid = (l0 + l1) * 0.5;
+        let anchor = (a0 + b0) * 0.5;
+        let perpendicular = (u.cross(b0 - a0).abs() <= solidcraft_geom::EPS).then_some(u.perp());
+        (anchor + u * (mid - anchor).dot(u), [Some(u), perpendicular])
+    } else {
+        let intersection = a0 + u * ((b0 - a0).cross(v) / cross);
+        (intersection, [(u + v).normalized(), (u - v).normalized()])
+    };
+    let hold = hold_of(sk, &[Ent::Curve(a), Ent::Curve(b)], false);
+    directions
+        .into_iter()
+        .flatten()
+        .filter_map(|d| {
+            let trial = seed_line_on(sk, rep, l, &hold, anchor, d)?;
+            let (p, q) = line_pts(&trial, l)?;
+            Some((p.dist(l0).hypot(q.dist(l1)), trial))
+        })
+        .min_by(|(left, _), (right, _)| left.total_cmp(right))
+        .map(|(_, trial)| trial)
+}
+
+/// Place the free ends of a line along a candidate support while keeping its size when both
+/// ends can move. The solve verifies all the sketch's constraints with the other lines held.
+fn seed_line_on(sk: &Sketch, rep: &SolveReport, line: usize, hold: &Hold, anchor: Vec2, direction: Vec2) -> Option<Sketch> {
+    let (p0, p1) = line_pts(sk, line)?;
+    let CurveKind::Line { a: p, b: q } = sk.curves.get(line)?.kind else { return None };
+    let movable = |i| !hold.points.contains(&i) && !ent_locked(sk, rep, Ent::Point(i));
+    let delta = p1 - p0;
+    let step = direction * delta.len().copysign(delta.dot(direction));
+    let project = |point: Vec2| anchor + direction * (point - anchor).dot(direction);
+    let mut trial = sk.clone();
+    match (movable(p), movable(q)) {
+        (true, true) => {
+            let mid = project((p0 + p1) * 0.5);
+            trial.points.get_mut(p)?.pos = mid - step * 0.5;
+            trial.points.get_mut(q)?.pos = mid + step * 0.5;
+        }
+        (true, false) => trial.points.get_mut(p)?.pos = project(p1) - step,
+        (false, true) => trial.points.get_mut(q)?.pos = project(p0) + step,
+        (false, false) => return None,
+    }
+    (solve_with(&mut trial, hold, None, Analysis::StatusOnly, None).ok() && shrunk(sk, &trial).is_none() && !flung(sk, &trial)).then_some(trial)
 }
 
 /// True when the ends of line `a` mirror (about the line `l`) closer onto the ends of `b` crossed

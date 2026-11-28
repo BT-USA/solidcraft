@@ -40,6 +40,7 @@ These are the shapes of the commands a part build needs, so an agent rarely has 
 - **Circles:** `sketch.circle.center` creates `c1` and `c1.center`, and no `p` point.
 - **Dimensions** share the `k` counter with constraints.
 - **Constraints can add curves:** a constraint about an axis, such as `sketch.constraint.symmetry` with `line:"y"`, adds a construction line and so takes the next `l` id. Read `created` before you count further.
+- **Symmetry of two lines:** pass `mode:"lines"` to mirror the lines while letting their endpoints slide. Pass `mode:"endpoints"` or omit `mode` to mirror the endpoints in pairs.
 - **Over-constraining** is refused with `that conflicts with the sketch: neither entity can move to satisfy it`. For example, symmetry already makes two circles equal.
 
 ## Dimensions

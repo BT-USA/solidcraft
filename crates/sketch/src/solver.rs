@@ -170,7 +170,7 @@ struct Layout {
     /// a solve slides along it before moving the curve (see [`SLIDE_WEIGHT`]).
     slide: Vec<bool>,
     /// Per variable: a coordinate of a point that is an end of a line used as a mirror axis
-    /// (a `Symmetric` constraint's line). Such a line is a reference for the mirrored geometry
+    /// (a symmetry constraint's axis). Such a line is a reference for the mirrored geometry
     /// and must not drift to satisfy an edit made to that geometry: it is made expensive to move.
     heavy: Vec<bool>,
 }
@@ -250,11 +250,9 @@ fn layout(sk: &Sketch, hold: &Hold) -> Layout {
         }
     }
     let mut heavy = vec![false; n];
-    // Mirror axes: every point that is an end of a line used as the `l` of a Symmetric
-    // constraint is made expensive to move, so the axis stays put when the mirrored geometry
-    // is edited.
+    // Mirror axes are expensive to move, so they stay put when the mirrored geometry is edited.
     for c in &sk.constraints {
-        if let ConstraintKind::Symmetric { l, .. } = c.kind
+        if let ConstraintKind::Symmetric { l, .. } | ConstraintKind::SymmetricLines { l, .. } = c.kind
             && let Some(CurveKind::Line { a, b }) = sk.curves.get(l).map(|cc| &cc.kind)
         {
             for pt in [*a, *b] {
@@ -807,6 +805,26 @@ fn residuals(s: &State, k: &ConstraintKind, out: &mut Vec<f64>) {
             out.push(line_dist((pp + qq) * 0.5, a, b));
             out.push((qq - pp).dot(dir) / len);
         }
+        SymmetricLines { a, b, l } => {
+            let (o, e) = s.line(l);
+            let (a0, a1) = s.line(a);
+            let (b0, b1) = s.line(b);
+            if let (Some(axis), Some(dir), Some(_)) = ((e - o).normalized(), (a1 - a0).normalized(), (b1 - b0).normalized())
+                && s.is_line(a)
+                && s.is_line(b)
+                && s.is_line(l)
+            {
+                let reflect = |v: Vec2| axis * (2.0 * v.dot(axis)) - v;
+                let anchor = reflect(a0 - o);
+                let direction = reflect(dir);
+                // Each end of b lies on the reflected infinite line. Neither row sets an
+                // endpoint's position along that line or depends on the ordering of b's ends.
+                out.extend([direction.cross(b0 - o - anchor), direction.cross(b1 - o - anchor)]);
+            } else {
+                // A line without a direction cannot satisfy line symmetry.
+                out.extend([1.0, 1.0]);
+            }
+        }
         Fix { .. } => {}
         // A pierce holds its point where the other sketch's curve crosses this sketch's
         // plane: the point is placed there before the solve and kept there (it is
@@ -1205,6 +1223,7 @@ fn block_refs(sk: &Sketch, b: &Block) -> Vec<Ref> {
             Tangent { a, b } => tangent(a, b).to_vec(),
             Smooth { a, b } => vec![C(a), C(b)],
             Symmetric { p, q, l } => vec![P(p), P(q), L(l)],
+            SymmetricLines { a, b, l } => vec![L(a), L(b), L(l)],
             Fix { .. } | OffsetDistance { .. } | Pierce { .. } => vec![],
         },
         Block::TangentAt(_, k, p) => match **k {

@@ -549,8 +549,9 @@ pub enum EqualMade {
 /// What `sketch.constraint.symmetry` returns.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct SymmetryResult {
-    /// The constraints added: one Symmetric for two points, two for two lines, a Symmetric and an
-    /// Equal for two circles or arcs; about a point, one Midpoint constraint for each pair, on
+    /// The constraints added: one Symmetric for two points, two for two lines in endpoints mode,
+    /// one SymmetricLines in lines mode, or a Symmetric and an Equal for two circles or arcs.
+    /// About a point, one Midpoint constraint for each pair, on
     /// a new construction line (reported in `created`).
     pub constraints: Vec<String>,
     /// The sketch's solve: `{solved, dof}`.
@@ -933,14 +934,36 @@ impl<'de> Deserialize<'de> for MidpointParams {
     }
 }
 
+/// The geometry to mirror when the operands are lines.
+#[derive(Clone, Copy, Debug, Default, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SymmetryMode {
+    /// Mirror both endpoint pairs.
+    #[default]
+    Endpoints,
+    /// Mirror the lines while leaving the endpoints free to slide along them.
+    Lines,
+}
+
+impl SymmetryMode {
+    pub(crate) fn read(value: Option<&Value>) -> Result<Self, &'static str> {
+        match value {
+            None => Ok(Self::Endpoints),
+            Some(Value::String(mode)) if mode == "endpoints" => Ok(Self::Endpoints),
+            Some(Value::String(mode)) if mode == "lines" => Ok(Self::Lines),
+            _ => Err("`mode` must be endpoints or lines"),
+        }
+    }
+}
+
 /// Make two points, two lines or two circles or arcs mirror images about a line or a sketch axis
 /// (`line`), or about a point (`point`): each pair then joined by a construction line that the
 /// point is the middle of.
 #[derive(Debug, JsonSchema)]
 #[schemars(deny_unknown_fields, transform = symmetry_required)]
 pub struct SymmetryParams {
-    /// The first point or curve (lines mirror their ends, circles and arcs their centres). It
-    /// stays; the second moves onto its mirror image.
+    /// The first point or curve (circles and arcs mirror their centres). It stays; the second
+    /// moves onto its mirror image.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Operand")]
     pub a: Option<Operand>,
@@ -958,6 +981,9 @@ pub struct SymmetryParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Operand")]
     pub point: Option<Operand>,
+    /// Defaults to `endpoints`. Use `lines` with two lines and a symmetry line or sketch axis.
+    #[serde(default)]
+    pub mode: SymmetryMode,
     /// The sketch (default: the one being edited).
     #[serde(default)]
     pub sketch: Option<SketchKey>,
@@ -982,7 +1008,8 @@ impl<'de> Deserialize<'de> for SymmetryParams {
             }
             let a = operand_of(&m, "a", "`a` must be a point or curve")?;
             let b = operand_of(&m, "b", "`b` must be a point or curve")?;
-            Ok(Self { a, b, line, point, sketch })
+            let mode = SymmetryMode::read(m.get("mode")).map_err(whole)?;
+            Ok(Self { a, b, line, point, mode, sketch })
         };
         read().map_err(D::Error::custom)
     }

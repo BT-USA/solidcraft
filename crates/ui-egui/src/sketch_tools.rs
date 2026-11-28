@@ -2969,6 +2969,7 @@ fn constraint_entities(k: &solidcraft_engine::sketch::ConstraintKind) -> (Vec<us
         Midpoint { p, l } => (vec![l], vec![p]),
         PointOnCurve { p, c } | PointAlong { p, c, .. } => (vec![c], vec![p]),
         Symmetric { p, q, l } => (vec![l], vec![p, q]),
+        SymmetricLines { a, b, l } => (vec![a, b, l], vec![]),
         Horizontal { l } | Vertical { l } => (vec![l], vec![]),
         Parallel { a, b }
         | Perpendicular { a, b }
@@ -3008,6 +3009,7 @@ fn glyph_anchors(sk: &solidcraft_engine::sketch::Sketch, k: &solidcraft_engine::
             sk.point(p).zip(sk.point(q)).map(|(a, b)| ((a + b) * 0.5, None)).into_iter().collect()
         }
         Horizontal { l } | Vertical { l } => mid(l).into_iter().collect(),
+        SymmetricLines { a, b, .. } => [mid(a), mid(b)].into_iter().flatten().collect(),
         Parallel { a, b }
         | Perpendicular { a, b }
         | Collinear { a, b }

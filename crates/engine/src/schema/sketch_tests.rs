@@ -70,7 +70,7 @@ fn schemas_and_the_key_check_agree() {
     assert_keys(input_schema_for::<MidpointParams>(), &["a", "b", "if_redundant", "line", "point", "sketch"]);
     assert_keys(input_schema_for::<ParallelParams>(), &["a", "b", "if_redundant", "sketch"]);
     assert_keys(input_schema_for::<PerpendicularParams>(), &["a", "b", "if_redundant", "sketch"]);
-    assert_keys(input_schema_for::<SymmetryParams>(), &["a", "b", "line", "point", "sketch"]);
+    assert_keys(input_schema_for::<SymmetryParams>(), &["a", "b", "line", "mode", "point", "sketch"]);
     assert_keys(input_schema_for::<TangentParams>(), &["a", "b", "if_redundant", "sketch"]);
 }
 

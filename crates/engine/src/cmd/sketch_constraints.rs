@@ -665,6 +665,7 @@ fn anchor(sk: &Sketch, k: &ConstraintKind) -> Option<Vec2> {
         PointOnCurve { p, .. } | PointAlong { p, .. } => pt(p),
         HorizontalPoints { p, q } | VerticalPoints { p, q } | Symmetric { p, q, .. } => Some((pt(p)? + pt(q)?) * 0.5),
         Horizontal { l } | Vertical { l } => mid(l),
+        SymmetricLines { a, b, .. } => Some((mid(a)? + mid(b)?) * 0.5),
         Parallel { a, .. } | Perpendicular { a, .. } | Collinear { a, .. } | Equal { a, .. } | Concentric { a, .. } | Angle { a, .. } => mid(a),
         Tangent { a, b } | Smooth { a, b } => {
             // At the shared end when there is one.

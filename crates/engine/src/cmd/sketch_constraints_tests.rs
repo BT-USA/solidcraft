@@ -929,6 +929,200 @@ fn symmetry_pairs_ends_by_their_mirror_images() {
 }
 
 #[test]
+fn line_symmetry_mirrors_supporting_lines_and_undoes_in_one_step() {
+    let mut s = line_symmetry_repro();
+    // Three independent segments start with four freedoms each. Connecting axis.start to
+    // the origin removes two, and reflection imposes two equations on the supporting lines.
+    assert_eq!(run(&mut s, "sketch.inspect", json!({}))["dof"], 10);
+    let before = s.doc.to_json();
+    let undo = s.undo.len();
+    let reply = run(&mut s, "sketch.constraint.symmetry", json!({"a": "l", "b": "r", "line": "axis", "mode": "lines"}));
+    assert_eq!(reply["sketch"]["solved"], true);
+    assert_eq!(reply["sketch"]["dof"], 8);
+    let check = |s: &Session| {
+        let sk = sketch(s);
+        let (start, end) = line_ends(&sk, "r");
+        for p in [start, end] {
+            // Reflecting l in x = 0 gives x = 3 + y/5.
+            assert!((p.x - (3.0 + p.y / 5.0)).abs() < 1e-6, "{p:?}");
+        }
+        // Project (5, 14) onto (3, 0) + t * (2, 10): t = 144/104 = 18/13.
+        assert!(end.dist(Vec2::new(75.0 / 13.0, 180.0 / 13.0)) < 1e-6, "the far end moved to {end:?}");
+        let (a, b) = line_ends(&sk, "l");
+        assert!((end.dist(start) - b.dist(a)).abs() > 2.0, "the two segments keep different lengths");
+    };
+    check(&s);
+    assert_eq!(s.undo.len(), undo + 1);
+    let after = s.doc.to_json();
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.doc.to_json(), before);
+    assert_eq!(line_ends(&sketch(&s), "r").1, Vec2::new(5.0, 14.0));
+    run(&mut s, "edit.redo", json!({}));
+    assert_eq!(s.doc.to_json(), after);
+    check(&s);
+
+    let mut reopened = Session::new(solidcraft_doc::Document::from_json(&after).unwrap());
+    reopened.active_sketch = s.active_sketch;
+    assert_eq!(run(&mut reopened, "sketch.inspect", json!({}))["dof"], 8);
+    check(&reopened);
+}
+
+fn line_symmetry_repro() -> Session {
+    let mut s = new_sketch();
+    run(&mut s, "sketch.line", json!({"points": [[0, 0], [0, 20]], "ids": ["axis"], "construction": true}));
+    run(&mut s, "sketch.line", json!({"points": [[-3, 0], [-5, 10]], "ids": ["l"]}));
+    run(&mut s, "sketch.line", json!({"points": [[3, 0], [5, 14]], "ids": ["r"]}));
+    s
+}
+
+#[test]
+fn line_symmetry_preserves_independently_dimensioned_lengths() {
+    let mut s = new_sketch();
+    run(&mut s, "sketch.line", json!({"points": [[-3, 0], [-6, 4]], "ids": ["l"]}));
+    // The reverse direction and different length leave r on l's mirror in x = 0.
+    run(&mut s, "sketch.line", json!({"points": [[9, 8], [3, 0]], "ids": ["r"]}));
+    for (id, length) in [("l", 5.0), ("r", 10.0)] {
+        run(&mut s, "sketch.dimension", json!({"entities": [id], "type": "length", "value": length}));
+    }
+    let reply = run(&mut s, "sketch.constraint.symmetry", json!({"a": "l", "b": "r", "line": "y", "mode": "lines"}));
+    // Two segments have eight freedoms. Two lengths and reflection remove four in total.
+    assert_eq!(reply["sketch"]["solved"], true);
+    assert_eq!(reply["sketch"]["dof"], 4);
+    let sk = sketch(&s);
+    for (id, length, ends) in [("l", 5.0, [(-3.0, 0.0), (-6.0, 4.0)]), ("r", 10.0, [(9.0, 8.0), (3.0, 0.0)])] {
+        let (a, b) = line_ends(&sk, id);
+        assert!((a.dist(b) - length).abs() < 1e-6, "{id} length");
+        for (p, (x, y)) in [a, b].into_iter().zip(ends) {
+            assert!(p.dist(Vec2::new(x, y)) < 1e-6, "{id} moved to {p:?}");
+        }
+    }
+}
+
+#[test]
+fn line_symmetry_aligns_perpendicular_segments_without_collapsing_them() {
+    for (fixed, moving) in [("l", "r"), ("r", "l")] {
+        let mut s = new_sketch();
+        run(&mut s, "sketch.line", json!({"points": [[-3, -5], [-3, 7]], "ids": ["l"]}));
+        run(&mut s, "sketch.line", json!({"points": [[1, 2], [7, 2]], "ids": ["r"]}));
+        run(&mut s, "sketch.constraint.fix", json!({"entity": fixed}));
+        let reply = run(&mut s, "sketch.constraint.symmetry", json!({"a": "l", "b": "r", "line": "y", "mode": "lines"}));
+        assert_eq!(reply["sketch"]["solved"], true, "{fixed} fixed");
+        assert_eq!(reply["sketch"]["dof"], 2, "the moving segment's ends can slide independently");
+        let (a, b) = line_ends(&sketch(&s), moving);
+        assert!(a.dist(b) > 1e-6, "{moving} collapsed: {a:?} to {b:?}");
+        for p in [a, b] {
+            // Reflection across the Y axis maps x = -3 to x = 3 and leaves y = 2 invariant.
+            let offset = if fixed == "l" { p.x - 3.0 } else { p.y - 2.0 };
+            assert!(offset.abs() < 1e-6, "{fixed} fixed: {p:?}");
+        }
+    }
+}
+
+#[test]
+fn line_symmetry_moves_a_free_axis_between_fixed_supporting_lines() {
+    let mut s = new_sketch();
+    run(&mut s, "sketch.line", json!({"points": [[-8, 0], [-4, 0]], "ids": ["l"]}));
+    run(&mut s, "sketch.line", json!({"points": [[6, -2], [6, 2]], "ids": ["r"]}));
+    run(&mut s, "sketch.line", json!({"points": [[0, 4], [0, 12]], "ids": ["axis"], "construction": true}));
+    run(&mut s, "sketch.constraint.fix", json!({"entities": ["l", "r"]}));
+    let reply = run(&mut s, "sketch.constraint.symmetry", json!({"a": "l", "b": "r", "line": "axis", "mode": "lines"}));
+    assert_eq!(reply["sketch"]["solved"], true);
+    assert_eq!(reply["sketch"]["dof"], 2, "the axis ends can slide along either bisector");
+    let (a, b) = line_ends(&sketch(&s), "axis");
+    let direction = b - a;
+    let length = direction.len();
+    assert!(length > 1e-6, "the axis collapsed: {a:?} to {b:?}");
+    // The supporting lines intersect at (6, 0). Both bisectors pass through it at ±45°.
+    let offset = Vec2::new(6.0, 0.0) - a;
+    assert!((direction.x * offset.y - direction.y * offset.x).abs() / length < 1e-6, "the axis misses the intersection: {a:?} to {b:?}");
+    assert!((direction.x.abs() - direction.y.abs()).abs() / length < 1e-6, "the axis does not bisect the angle: {a:?} to {b:?}");
+}
+
+#[test]
+fn line_symmetry_endpoint_mode_matches_the_default() {
+    for mode in [None, Some("endpoints")] {
+        let mut s = line_symmetry_repro();
+        let mut params = json!({"a": "l", "b": "r", "line": "axis"});
+        if let Some(mode) = mode {
+            params["mode"] = json!(mode);
+        }
+        let reply = run(&mut s, "sketch.constraint.symmetry", params);
+        // The two endpoint pairs contribute four equations to a sketch with ten freedoms.
+        assert_eq!(reply["sketch"]["dof"], 6, "{mode:?}");
+        let (start, end) = line_ends(&sketch(&s), "r");
+        assert!(start.dist(Vec2::new(3.0, 0.0)) < 1e-6, "{mode:?}: {start:?}");
+        assert!(end.dist(Vec2::new(5.0, 10.0)) < 1e-6, "{mode:?}: {end:?}");
+    }
+}
+
+#[test]
+fn line_symmetry_reopens_a_historical_endpoint_pair() {
+    // A format 64 sketch with the two `symmetric` records written for an endpoint pair.
+    let saved = r#"{
+        "format": "solidcraft/64", "name": "Old symmetry", "params": [], "next_id": 2,
+        "features": [{
+            "id": 1, "name": "S", "type": "sketch", "plane": {"type": "origin", "name": "XY"},
+            "sketch": {
+                "points": [
+                    {"id": "origin", "pos": [0, 0], "fixed": true},
+                    {"id": "axis.end", "pos": [0, 20], "fixed": true},
+                    {"id": "l.start", "pos": [-3, 0], "fixed": true},
+                    {"id": "l.end", "pos": [-5, 10], "fixed": true},
+                    {"id": "r.start", "pos": [3, 0]},
+                    {"id": "r.end", "pos": [5, 10]}
+                ],
+                "curves": [
+                    {"id": "axis", "type": "line", "a": 0, "b": 1, "construction": true},
+                    {"id": "l", "type": "line", "a": 2, "b": 3},
+                    {"id": "r", "type": "line", "a": 4, "b": 5}
+                ],
+                "constraints": [
+                    {"id": "c1", "type": "symmetric", "p": 2, "q": 4, "l": 0},
+                    {"id": "c2", "type": "symmetric", "p": 3, "q": 5, "l": 0}
+                ]
+            }
+        }]
+    }"#;
+    let mut s = Session::new(solidcraft_doc::Document::from_json(saved).unwrap());
+    s.active_sketch = Some(1);
+    assert_eq!(run(&mut s, "sketch.inspect", json!({}))["dof"], 0);
+    let sk = sketch(&s);
+    assert_eq!(line_ends(&sk, "l").1, Vec2::new(-5.0, 10.0));
+    assert_eq!(line_ends(&sk, "r").1, Vec2::new(5.0, 10.0));
+}
+
+#[test]
+fn line_symmetry_rejects_invalid_operands_atomically() {
+    let mut s = line_symmetry_repro();
+    let check = |s: &mut Session, params: Value| {
+        let before = s.doc.to_json();
+        let steps = (s.undo.len(), s.redo.len());
+        assert!(s.execute("sketch.constraint.symmetry", &params).is_err(), "{params}");
+        assert_eq!(s.doc.to_json(), before, "{params}");
+        assert_eq!((s.undo.len(), s.redo.len()), steps, "{params}");
+    };
+    for (a, b, axis) in
+        [("axis", "r", "axis"), ("l", "axis", "axis"), ("l", "l", "axis"), ("missing", "r", "axis"), ("l", "missing", "axis"), ("l", "r", "missing")]
+    {
+        check(&mut s, json!({"a": a, "b": b, "line": axis, "mode": "lines"}));
+    }
+    check(&mut s, json!({"a": "l", "b": "r", "line": "axis", "mode": "wrong"}));
+    check(&mut s, json!({"a": "l.start", "b": "r.start", "line": "axis", "mode": "lines"}));
+    // The line command refuses zero length at creation. Simulate coincident ends in authored geometry.
+    let id = s.active_sketch.unwrap();
+    for (start, end) in [("l.start", "l.end"), ("r.start", "r.end"), ("axis.start", "axis.end")] {
+        let mut doc = (*s.doc).clone();
+        let sk = doc.sketch_mut(id).unwrap();
+        let a = sk.resolve_point(start).unwrap();
+        let b = sk.resolve_point(end).unwrap();
+        sk.points[b].pos = sk.points[a].pos;
+        let mut invalid = Session::new(doc);
+        invalid.active_sketch = Some(id);
+        check(&mut invalid, json!({"a": "l", "b": "r", "line": "axis", "mode": "lines"}));
+    }
+}
+
+#[test]
 fn midpoint_alignment_persists_undoes_and_survives_endpoint_edits() {
     use solidcraft_sketch::ConstraintKind;
     for mode in ["horizontal", "vertical"] {

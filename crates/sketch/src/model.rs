@@ -447,6 +447,12 @@ pub enum ConstraintKind {
         q: usize,
         l: usize,
     },
+    /// The supporting lines of `a` and `b` mirror about `l`; their endpoints can slide.
+    SymmetricLines {
+        a: usize,
+        b: usize,
+        l: usize,
+    },
     Fix {
         p: usize,
     },
@@ -654,7 +660,7 @@ impl ConstraintKind {
             Equal { .. } => "Equal",
             Concentric { .. } => "Concentric",
             Midpoint { .. } => "MidPoint",
-            Symmetric { .. } => "Symmetry",
+            Symmetric { .. } | SymmetricLines { .. } => "Symmetry",
             Fix { .. } => "Fix",
             Pierce { .. } => "Pierce",
             Distance { .. }
@@ -701,6 +707,7 @@ impl ConstraintKind {
             PointCircleDistance { p, c, .. } => (vec![p], vec![c]),
             CircleCircleDistance { a, b, .. } => (vec![], vec![a, b]),
             Symmetric { p, q, l } => (vec![p, q], vec![l]),
+            SymmetricLines { a, b, l } => (vec![], vec![a, b, l]),
             Fix { p } => (vec![p], vec![]),
             // The pierced curve belongs to another sketch: it has no index here.
             Pierce { p, .. } => (vec![p], vec![]),
@@ -780,6 +787,11 @@ impl ConstraintKind {
             Symmetric { p, q, l } => {
                 fp(p);
                 fp(q);
+                fc(l);
+            }
+            SymmetricLines { a, b, l } => {
+                fc(a);
+                fc(b);
                 fc(l);
             }
             Fix { p } => fp(p),
@@ -1296,6 +1308,7 @@ impl Sketch {
                 Symmetric { p, q, l } => (13, pair(p, q).0, pair(p, q).1, l),
                 Fix { p } => (14, p, 0, 0),
                 Smooth { a, b } => (15, pair(a, b).0, pair(a, b).1, 0),
+                SymmetricLines { a, b, l } => (16, pair(a, b).0, pair(a, b).1, l),
                 _ => return None,
             })
         };
@@ -1355,6 +1368,19 @@ impl Sketch {
             | Symmetric { l, .. }
             | PointLineDistance { l, .. }
             | LinearDiameter { l, .. } => need_line(l)?,
+            SymmetricLines { a, b, l } => {
+                if a == b || a == l || b == l {
+                    return Err(SketchError::Invalid("line symmetry needs three distinct lines".into()));
+                }
+                for i in [a, b, l] {
+                    need_line(i)?;
+                    let ends = self.curves.get(i).and_then(|c| c.kind.ends());
+                    let direction = ends.and_then(|(p, q)| (self.point(q)? - self.point(p)?).normalized());
+                    if direction.is_none() {
+                        return Err(SketchError::Invalid(format!("line symmetry needs a nonzero length for `{}`", name(i))));
+                    }
+                }
+            }
             // The middle of a line is its ends' mean; the middle of an arc is halfway along it.
             Midpoint { l, .. } if !matches!(self.curves.get(l).map(|c| &c.kind), Some(CurveKind::Line { .. } | CurveKind::Arc { .. })) => {
                 return Err(SketchError::WrongKind(name(l), "needs a line or an arc".into()));
