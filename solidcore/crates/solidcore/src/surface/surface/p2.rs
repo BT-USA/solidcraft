@@ -243,6 +243,7 @@ use crate::curve::curve::p3::PointSolveOptions;
 use crate::curve::curve::p7::PropertyAnalysisOptions;
 use crate::curve::curve::p8::CurveIntersectOptions;
 use crate::curve::curve::{Curve, CurvePropertyType};
+use crate::curve::ellipse::p1::SweepEnd;
 use crate::curve::line::Line;
 use crate::error::surface::SurfaceFailure;
 use crate::error::{
@@ -639,6 +640,15 @@ impl Clone for Surface {
 }
 
 impl Surface {
+    /// Not upstream: reads the seam of a cone or cylinder exactly ([`SweepEnd::OnlyTheEndIsSeam`])
+    /// in the evaluations of this copy, where a point of a line must lie on the surface it
+    /// meets. Any other surface is unchanged.
+    pub(crate) fn read_seam_exactly(&mut self) {
+        if let SurfaceKind::Cone(c) = &mut self.kind {
+            c.set_sweep_end(SweepEnd::OnlyTheEndIsSeam);
+        }
+    }
+
     /// A temporary evaluation copy: retain the owner and exact NURBS data rather
     /// than invoking the upstream copy constructor's knot fix-up.
     pub fn clone_for_evaluation(&self) -> Result<Self> {
@@ -957,6 +967,7 @@ impl Surface {
                 semi_angle_deg: s.semi_angle_deg,
                 inside_out: s.inside_out,
                 cylinder: s.cylinder,
+                sweep_end: s.sweep_end,
             })),
             SurfaceKind::Sphere(s) => SurfaceKind::Sphere(Box::new(Sphere {
                 base: s.base().clone_for_evaluation(depth + 1)?,

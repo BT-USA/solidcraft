@@ -133,6 +133,7 @@
 
 use crate::curve::curve::p2::{CIRCLE_TYPE, LINE_TYPE};
 use crate::curve::curve::{Curve, CurveKind};
+use crate::curve::ellipse::p1::SweepEnd;
 use crate::curve::ellipse::{Ellipse, EllipseOptions};
 use crate::curve::line::{BoundedLineOptions, Line};
 use crate::error::{
@@ -255,6 +256,9 @@ pub struct Cone {
     pub(crate) inside_out: bool,
     /// The object is an `SmCylinder`.
     pub(crate) cylinder: bool,
+    /// Not upstream: how the sweep conversion treats a parameter just short of the seam
+    /// ([`SweepEnd`]); a surface a line is met on reads it exactly.
+    pub(crate) sweep_end: SweepEnd,
 }
 
 /// Whether an unbounded cone's height maps onto its NURB's linear interval as a bounded
@@ -281,7 +285,16 @@ pub(crate) fn cone_convert_uv_from_nurbs_to_step(
     k: &Kernel,
     nurbs_uv: Point2,
 ) -> Result<Point2> {
-    Ok(cone_convert_uv_from_nurbs_to_step_exact(rev, inside_out, k, nurbs_uv)?.0)
+    Ok(
+        cone_convert_uv_from_nurbs_to_step_exact(
+            rev,
+            inside_out,
+            SweepEnd::default(),
+            k,
+            nurbs_uv,
+        )?
+        .0,
+    )
 }
 
 /// [`cone_convert_uv_from_nurbs_to_step`] with the polar converter's exactness: `false`
@@ -289,6 +302,7 @@ pub(crate) fn cone_convert_uv_from_nurbs_to_step(
 pub(crate) fn cone_convert_uv_from_nurbs_to_step_exact(
     rev: &SurfOfRevolution,
     inside_out: bool,
+    end: SweepEnd,
     k: &Kernel,
     nurbs_uv: Point2,
 ) -> Result<(Point2, bool)> {
@@ -308,7 +322,9 @@ pub(crate) fn cone_convert_uv_from_nurbs_to_step_exact(
     let circle = rev
         .polar_curve()
         .ok_or_else(|| SolidError::surface(OP_TO_STEP, SurfaceFailure::NoPolarConverter))?;
-    let (x, exact) = rev.polar.convert_to_polar_parameter(k, circle, nurb_uv.x)?;
+    let (x, exact) = rev
+        .polar
+        .convert_to_polar_parameter_ending(k, circle, nurb_uv.x, end)?;
 
     // convert linear coordinate
     // (WR-713: see `unbounded_maps_linearly`)
@@ -543,6 +559,7 @@ impl Cone {
             semi_angle_deg: UNDEF_DOUBLE,
             inside_out: false,
             cylinder,
+            sweep_end: SweepEnd::default(),
         }
     }
 
@@ -688,6 +705,7 @@ impl Cone {
             semi_angle_deg,
             inside_out,
             cylinder: false,
+            sweep_end: SweepEnd::default(),
         };
 
         // Create generator curve (SmLine)
@@ -839,6 +857,7 @@ impl Cone {
             semi_angle_deg: 0.0,
             inside_out,
             cylinder: false,
+            sweep_end: SweepEnd::default(),
         };
 
         // Specify GenCurve type
@@ -1557,7 +1576,14 @@ impl Cone {
     ///
     /// `SM_ERR_NULL_POINTER` without polar curve; those of the polar conversion.
     pub fn convert_uv_from_nurbs_to_step(&self, k: &Kernel, nurbs_uv: Point2) -> Result<Point2> {
-        cone_convert_uv_from_nurbs_to_step(&self.rev, self.inside_out, k, nurbs_uv)
+        Ok(cone_convert_uv_from_nurbs_to_step_exact(
+            &self.rev,
+            self.inside_out,
+            self.sweep_end,
+            k,
+            nurbs_uv,
+        )?
+        .0)
     }
 
     /// [`Self::convert_uv_from_nurbs_to_step`] with the polar converter's exactness.
@@ -1570,7 +1596,13 @@ impl Cone {
         k: &Kernel,
         nurbs_uv: Point2,
     ) -> Result<(Point2, bool)> {
-        cone_convert_uv_from_nurbs_to_step_exact(&self.rev, self.inside_out, k, nurbs_uv)
+        cone_convert_uv_from_nurbs_to_step_exact(
+            &self.rev,
+            self.inside_out,
+            self.sweep_end,
+            k,
+            nurbs_uv,
+        )
     }
 
     // ---- evaluation -----------------------------------------------------------------
@@ -1642,6 +1674,11 @@ impl Cone {
             }
         }
         Ok(d)
+    }
+
+    /// Not upstream: this cone with its seam read as `end` ([`SweepEnd`]).
+    pub(crate) fn set_sweep_end(&mut self, end: SweepEnd) {
+        self.sweep_end = end;
     }
 
     /// The point at the NURB parameters `uv` (`EvaluatePoint`): the STEP point of the
@@ -2250,6 +2287,7 @@ impl crate::geom::content::Content for Cone {
             semi_angle_deg,
             inside_out,
             cylinder,
+            sweep_end,
         } = self;
         d.tag(0xC0E);
         rev.content(d)?;
@@ -2257,6 +2295,10 @@ impl crate::geom::content::Content for Cone {
         d.f64(*semi_angle_deg);
         d.bool(*inside_out);
         d.bool(*cylinder);
+        // a surface reading its seam exactly is another evaluation: keep the default's digest
+        if *sweep_end != SweepEnd::default() {
+            d.bool(true);
+        }
         Some(())
     }
 }

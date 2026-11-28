@@ -239,6 +239,25 @@ fn report(
     Ok(false)
 }
 
+/// Which parameters of a full-turn sweep the polar conversion places on its seam, where the
+/// sweep's end and start are one place.
+///
+/// A parameter just short of the end converts, inverted from its point, to an angle just
+/// short of the turn. The conversion's own tolerance zone snaps that point to the seam when it
+/// is within the zone tolerance of the end, which moves the surface point by the radius times
+/// the shortfall: harmless where only the net's fit to the surface is read, wrong where a point
+/// of a line must lie on the surface it meets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SweepEnd {
+    /// A point within the zone tolerance of the end is the seam: the angle the net's own end
+    /// takes (what an evaluation of the surface as a net reads).
+    #[default]
+    NearEndIsSeam,
+    /// Only the end point itself (within the scaled zero) is the seam: a parameter just short
+    /// of the end keeps its own angle, so the surface point stays on the line that met it.
+    OnlyTheEndIsSeam,
+}
+
 const POLAR_CLASS: (i64, &str) = (POLAR_CONVERSION_TYPE, "SmPolarConversion");
 
 /// `is >> value` of a double: stores the extracted value unless the stream's
@@ -268,6 +287,22 @@ impl PolarConversion {
         k: &Kernel,
         curve: &Ellipse,
         nurbs_param: f64,
+    ) -> Result<(f64, bool)> {
+        self.convert_to_polar_parameter_ending(k, curve, nurbs_param, SweepEnd::default())
+    }
+
+    /// [`Self::convert_to_polar_parameter`] with the treatment of a parameter just short of
+    /// the sweep's end given ([`SweepEnd`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::convert_to_polar_parameter`].
+    pub fn convert_to_polar_parameter_ending(
+        &self,
+        k: &Kernel,
+        curve: &Ellipse,
+        nurbs_param: f64,
+        end: SweepEnd,
     ) -> Result<(f64, bool)> {
         // Can't do anything if not set.
         if !self.has_curve {
@@ -304,12 +339,12 @@ impl PolarConversion {
             | ExtentPointType::Inside => {
                 // use a conversion based arcTan2 (EvaluatePoint status ignored)
                 let point = ignored(curve.base.evaluate_point(nurbs_param))?.unwrap_or(Vec3::UNDEF);
-                // A point is snapped to the domain start only when it is the end point to the
-                // scaled zero. The default zone tolerance snaps a point up to 1e-7 short of the
-                // end, which the seam fix below then turns into the end itself: a parameter
-                // just below the seam would take the seam's angle, and a point just above it
-                // would not.
-                let seam_zone = 100.0 * EFF_ZERO * (1.0 + point.max_dimension());
+                let seam_zone = match end {
+                    // the system's zone tolerance
+                    SweepEnd::NearEndIsSeam => 0.0,
+                    // the end point itself, to the scaled zero
+                    SweepEnd::OnlyTheEndIsSeam => 100.0 * EFF_ZERO * (1.0 + point.max_dimension()),
+                };
                 curve.step_inversion(k, point, false, seam_zone).0
             }
         };

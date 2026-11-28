@@ -613,6 +613,10 @@ impl<O: SolutionObject> FaceSolveCache<O> for FaceLineCache<'_, O> {
         let solve_cache = built.and_then(|()| {
             let mut c = lease.cache.base().map_handles(|_| Ok(surface))?;
             c.set_surface_handle(Some(surface));
+            // The line's solve evaluates this copy of the face's surface (the face's own,
+            // kept in `lease`, stays as it was): its seam is read exactly, as in
+            // `global_line_intersect_with`.
+            c.surface_mut().read_seam_exactly();
             Ok(c)
         });
         self.trim = Some(lease);
@@ -685,12 +689,15 @@ fn global_line_intersect_with<O: SolutionObject>(
     // First find the solutions with the underlying surface
     // Note: pass False as the bFireRay argument, otherwise it will return
     // only the first hit in the surface, and that might not be in this Face.
-    let face_surface = b
+    let mut face_surface = b
         .face(f)?
         .surface
         .as_ref()
         .ok_or_else(|| null("GlobalLineIntersect: face without surface"))?
         .clone_for_evaluation()?;
+    // The line meets this copy: its seam is read exactly, so a parameter just short of the
+    // seam stays on the line that met it.
+    face_surface.read_seam_exactly();
     // A surface with a face solves on the face's trimmed cache, kept on the surface:
     // a cache held by the caller stands only for a surface without face.
     let held = match held {
