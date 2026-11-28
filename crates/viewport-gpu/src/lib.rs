@@ -96,7 +96,7 @@ fn popped(f: impl std::future::Future<Output = Option<wgpu::Error>>) -> Option<w
 /// fields are declared last pushed first: Rust drops fields in declaration order, so an early
 /// return pops them in order too. Use this, never an array of guards: an array drops its
 /// elements first to last.
-pub(crate) struct ErrorScopes {
+pub struct ErrorScopes {
     validation: wgpu::ErrorScopeGuard,
     internal: wgpu::ErrorScopeGuard,
     out_of_memory: wgpu::ErrorScopeGuard,
@@ -104,7 +104,7 @@ pub(crate) struct ErrorScopes {
 
 impl ErrorScopes {
     /// The three scopes pushed on `device`, on this thread.
-    fn push(device: &wgpu::Device) -> Self {
+    pub fn push(device: &wgpu::Device) -> Self {
         let out_of_memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
         let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
         let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
@@ -112,7 +112,7 @@ impl ErrorScopes {
     }
 
     /// The scopes popped, last pushed first: the error each caught, on its way.
-    fn pop(self) -> [impl std::future::Future<Output = Option<wgpu::Error>> + use<>; 3] {
+    pub fn pop(self) -> [impl std::future::Future<Output = Option<wgpu::Error>> + use<>; 3] {
         let ErrorScopes { validation, internal, out_of_memory } = self;
         // An array's elements are evaluated left to right, so this is the order they are popped.
         [validation.pop(), internal.pop(), out_of_memory.pop()]
@@ -363,11 +363,11 @@ impl TessGpu {
     pub fn with_shader(adapter: impl Into<String>, device: wgpu::Device, queue: wgpu::Queue, shader: &str) -> Result<Self> {
         // Errors here would go to the device's uncaptured-error handler, which panics by default:
         // capture them, so a device that cannot run the shader only loses GPU tessellation.
-        let scopes = [wgpu::ErrorFilter::OutOfMemory, wgpu::ErrorFilter::Internal, wgpu::ErrorFilter::Validation].map(|f| device.push_error_scope(f));
+        let scopes = ErrorScopes::push(&device);
         let (pipeline, layout) = Self::build(&device, shader);
         let mut failed = None;
-        for scope in scopes.into_iter().rev() {
-            if let Some(e) = popped(scope.pop()) {
+        for scope in scopes.pop() {
+            if let Some(e) = popped(scope) {
                 failed.get_or_insert(e.to_string());
             }
         }

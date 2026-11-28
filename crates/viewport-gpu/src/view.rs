@@ -3636,11 +3636,11 @@ fn fitted_size(size: [u32; 2], samples: u32, budget: u64) -> [u32; 2] {
 /// and be drawn into, invalid, every frame. A browser answers later and is not waited for (no
 /// error is assumed).
 fn allocated<T>(device: &wgpu::Device, make: impl FnOnce() -> T) -> Result<T, wgpu::Error> {
-    let scopes = [wgpu::ErrorFilter::OutOfMemory, wgpu::ErrorFilter::Internal, wgpu::ErrorFilter::Validation].map(|f| device.push_error_scope(f));
+    let scopes = crate::ErrorScopes::push(device);
     let value = make();
     let mut failed = None;
-    for scope in scopes.into_iter().rev() {
-        if let Some(e) = crate::popped(scope.pop()) {
+    for scope in scopes.pop() {
+        if let Some(e) = crate::popped(scope) {
             failed.get_or_insert(e);
         }
     }

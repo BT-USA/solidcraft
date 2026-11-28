@@ -93,11 +93,13 @@ fn gpu(e: impl std::fmt::Display) -> JobError {
     JobError::new(ErrorCode::HostUnavailable, e.to_string())
 }
 
-fn scopes(device: &wgpu::Device) -> [wgpu::ErrorScopeGuard; 3] {
-    [wgpu::ErrorFilter::Validation, wgpu::ErrorFilter::OutOfMemory, wgpu::ErrorFilter::Internal].map(|f| device.push_error_scope(f))
+/// Error scopes for GPU work, popped last pushed first however the work ends, an early return
+/// included ([`solidcraft_viewport_gpu::ErrorScopes`]).
+fn scopes(device: &wgpu::Device) -> solidcraft_viewport_gpu::ErrorScopes {
+    solidcraft_viewport_gpu::ErrorScopes::push(device)
 }
-fn checked(scopes: [wgpu::ErrorScopeGuard; 3]) -> Result<()> {
-    let errors: Vec<_> = scopes.into_iter().rev().filter_map(|scope| pollster::block_on(scope.pop())).collect();
+fn checked(scopes: solidcraft_viewport_gpu::ErrorScopes) -> Result<()> {
+    let errors: Vec<_> = scopes.pop().into_iter().filter_map(pollster::block_on).collect();
     solidcraft_viewport_gpu::preferred_error(errors).map_or(Ok(()), |e| Err(gpu(solidcraft_viewport_gpu::describe_error(&e))))
 }
 
@@ -1109,6 +1111,9 @@ struct Task {
     studio: f32,
     #[cfg(test)]
     metrics: (f64, u64, f64),
+    /// The parameter upload's allocation is refused (tests fail a dispatch there).
+    #[cfg(test)]
+    refuse_parameters: bool,
     #[cfg(test)]
     scene_cache_hit: bool,
 }
@@ -1378,10 +1383,16 @@ impl Task {
             #[cfg(test)]
             metrics: (bvh_ms, upload_bytes, upload_ms),
             #[cfg(test)]
+            refuse_parameters: false,
+            #[cfg(test)]
             scene_cache_hit: cache_hit,
         })
     }
     fn parameters(&self, count: u32) -> Result<Vec<u8>> {
+        #[cfg(test)]
+        if self.refuse_parameters {
+            return scene::reserved(usize::MAX);
+        }
         let mut bytes = scene::reserved(PARAMETER_BYTES)?;
         if bytes.capacity() != PARAMETER_BYTES {
             return Err(JobError::new(ErrorCode::LimitExceeded, "GPU parameter upload exceeds its prepaid capacity"));

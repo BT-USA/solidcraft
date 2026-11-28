@@ -2068,6 +2068,28 @@ fn gpu_camera_inside_volume_fails_without_publishing_fake_radiance() {
     assert!(error.message.contains("4294967296 of 1 paths"), "{error}");
 }
 
+/// A tile whose parameter upload is refused fails with that refusal, never a panic, and leaves
+/// the device's error scopes balanced, so the next tile draws (the early return dropped the
+/// tile's error scopes first to last, and wgpu panics unless they are popped last to first).
+#[test]
+fn a_refused_parameter_upload_fails_the_tile_and_the_next_tile_draws() {
+    let Some(executor) = executor() else { return };
+    let mut task = Task::new(executor.context.clone(), sphere(white()), request(8), JobOptions::default(), CancelToken::default()).unwrap();
+    task.refuse_parameters = true;
+    let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| task.dispatch()));
+    match refused {
+        Ok(Err(error)) => assert_eq!(error.code, ErrorCode::AllocationFailed, "{error}"),
+        Ok(Ok(())) => panic!("a refused parameter upload drew a tile"),
+        Err(panic) => {
+            let why = panic.downcast_ref::<String>().map(String::as_str).or(panic.downcast_ref::<&str>().copied());
+            panic!("the tile panicked: {why:?}")
+        }
+    }
+    task.refuse_parameters = false;
+    task.complete_sample().unwrap();
+    assert_eq!(task.sample, 1);
+}
+
 #[test]
 fn engine_preflight_keeps_cpu_alpha_and_routes_physical_glass_to_the_native_host() {
     use serde_json::json;

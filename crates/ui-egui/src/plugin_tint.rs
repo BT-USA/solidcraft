@@ -312,7 +312,7 @@ pub(crate) fn build(adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu
     if !adapter.get_downlevel_capabilities().flags.contains(wgpu::DownlevelFlags::COMPUTE_SHADERS) {
         return Err("this graphics card runs no compute shaders".into());
     }
-    let scopes = [wgpu::ErrorFilter::Validation, wgpu::ErrorFilter::OutOfMemory, wgpu::ErrorFilter::Internal].map(|f| device.push_error_scope(f));
+    let scopes = solidcraft_viewport_gpu::ErrorScopes::push(device);
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("sc_plugin_tint"),
         source: wgpu::ShaderSource::Wgsl(loaded.wgsl.as_str().into()),
@@ -386,8 +386,8 @@ pub(crate) fn build(adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu
     }
     let host = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("sc_plugin_tint_host"), layout: &host_layout, entries: &bindings });
     let mut error = None;
-    for scope in scopes.into_iter().rev() {
-        if let Some(e) = pollster::block_on(scope.pop()) {
+    for scope in scopes.pop() {
+        if let Some(e) = pollster::block_on(scope) {
             error = Some(e.to_string());
         }
     }

@@ -570,7 +570,7 @@ fn build(rs: &egui_wgpu::RenderState, key: &str, loaded: Loaded) -> Result<Activ
         return Err("not a background".into());
     }
     let device = &rs.device;
-    let scopes = [wgpu::ErrorFilter::Validation, wgpu::ErrorFilter::OutOfMemory, wgpu::ErrorFilter::Internal].map(|f| device.push_error_scope(f));
+    let scopes = solidcraft_viewport_gpu::ErrorScopes::push(device);
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("sc_plugin_background"),
         source: wgpu::ShaderSource::Wgsl(loaded.wgsl.as_str().into()),
@@ -657,8 +657,8 @@ fn build(rs: &egui_wgpu::RenderState, key: &str, loaded: Loaded) -> Result<Activ
         grids.iter().map(|grid| group(device, &layout, &uniforms, samplers, &views, Some(grid))).collect()
     };
     let mut error = None;
-    for scope in scopes.into_iter().rev() {
-        if let Some(e) = pollster::block_on(scope.pop()) {
+    for scope in scopes.pop() {
+        if let Some(e) = pollster::block_on(scope) {
             error = Some(e.to_string());
         }
     }

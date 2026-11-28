@@ -89,7 +89,7 @@ impl Kernel {
         if !super::gpu_cull::supported(device) {
             return None;
         }
-        let scopes = [wgpu::ErrorFilter::OutOfMemory, wgpu::ErrorFilter::Internal, wgpu::ErrorFilter::Validation].map(|f| device.push_error_scope(f));
+        let scopes = crate::ErrorScopes::push(device);
         let multisampled = samples > 1;
         let tex = |binding, sample_type, multisampled| wgpu::BindGroupLayoutEntry {
             binding,
@@ -149,8 +149,8 @@ impl Kernel {
             down_layout,
         };
         let mut failed = None;
-        for scope in scopes.into_iter().rev() {
-            if let Some(e) = crate::popped(scope.pop()) {
+        for scope in scopes.pop() {
+            if let Some(e) = crate::popped(scope) {
                 failed.get_or_insert(e.to_string());
             }
         }

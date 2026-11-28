@@ -25,11 +25,11 @@ impl Renderer {
         if self.target.samples == 1 {
             return Ok(MsaaCheck::FailedAtOne);
         }
-        let scopes = [wgpu::ErrorFilter::OutOfMemory, wgpu::ErrorFilter::Internal, wgpu::ErrorFilter::Validation].map(|f| device.push_error_scope(f));
+        let scopes = crate::ErrorScopes::push(device);
         let mut replacement = Self::with_window_target(device, GpuTarget { samples: 1, ..self.target }, self.window, None);
         let mut error = None;
-        for scope in scopes.into_iter().rev() {
-            if let Some(e) = crate::popped(scope.pop()) {
+        for scope in scopes.pop() {
+            if let Some(e) = crate::popped(scope) {
                 error.get_or_insert(e);
             }
         }
@@ -58,7 +58,7 @@ impl Renderer {
         ) {
             return Err(GpuError::Unsupported("anti-aliasing check colour format".into()));
         }
-        let scopes = [wgpu::ErrorFilter::OutOfMemory, wgpu::ErrorFilter::Internal, wgpu::ErrorFilter::Validation].map(|f| device.push_error_scope(f));
+        let scopes = crate::ErrorScopes::push(device);
         let result = self.probe_pixels(device, queue, blank_samples);
         // Discard the probe's uploads and picture even on errors, before the real scene arrives.
         self.pic.model = Batches::default();
@@ -70,8 +70,8 @@ impl Renderer {
         self.pic.ss_ready = false;
         self.pic.cached = None;
         let mut error = None;
-        for scope in scopes.into_iter().rev() {
-            if let Some(e) = crate::popped(scope.pop()) {
+        for scope in scopes.pop() {
+            if let Some(e) = crate::popped(scope) {
                 error.get_or_insert(e);
             }
         }

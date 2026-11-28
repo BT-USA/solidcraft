@@ -78,7 +78,7 @@ impl Pipelines {
         depth: Option<wgpu::TextureFormat>,
         samples: u32,
     ) -> Option<Pipelines> {
-        let scopes = [wgpu::ErrorFilter::OutOfMemory, wgpu::ErrorFilter::Internal, wgpu::ErrorFilter::Validation].map(|f| device.push_error_scope(f));
+        let scopes = crate::ErrorScopes::push(device);
         let reversed = super::reversed_depth(depth);
         let samples = samples.max(1);
         let multisample = wgpu::MultisampleState { count: samples, mask: !0, alpha_to_coverage_enabled: false };
@@ -194,8 +194,8 @@ impl Pipelines {
             cache: None,
         });
         let mut failed = None;
-        for scope in scopes.into_iter().rev() {
-            if let Some(e) = crate::popped(scope.pop()) {
+        for scope in scopes.pop() {
+            if let Some(e) = crate::popped(scope) {
                 failed.get_or_insert(e.to_string());
             }
         }

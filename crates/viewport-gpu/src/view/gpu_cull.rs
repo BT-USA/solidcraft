@@ -61,7 +61,7 @@ impl Kernel {
         if !supported(device) {
             return None;
         }
-        let scopes = [wgpu::ErrorFilter::OutOfMemory, wgpu::ErrorFilter::Internal, wgpu::ErrorFilter::Validation].map(|f| device.push_error_scope(f));
+        let scopes = crate::ErrorScopes::push(device);
         let module =
             device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("sc_cull"), source: wgpu::ShaderSource::Wgsl(SHADER.into()) });
         let entry = |binding: u32, ty: wgpu::BufferBindingType| wgpu::BindGroupLayoutEntry {
@@ -108,8 +108,8 @@ impl Kernel {
         };
         let kernel = Kernel { pick: pipeline("pick"), scan: pipeline("scan"), place: pipeline("place"), layout };
         let mut failed = None;
-        for scope in scopes.into_iter().rev() {
-            if let Some(e) = crate::popped(scope.pop()) {
+        for scope in scopes.pop() {
+            if let Some(e) = crate::popped(scope) {
                 failed.get_or_insert(e.to_string());
             }
         }

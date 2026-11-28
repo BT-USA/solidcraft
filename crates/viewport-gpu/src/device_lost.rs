@@ -54,12 +54,11 @@ impl DeviceLost {
 /// goes to the device's handler. Native error scopes resolve at once; on the web the scope still
 /// keeps the error from the handler.
 pub fn capture_errors<T>(device: &wgpu::Device, f: impl FnOnce() -> T) -> (T, Option<wgpu::Error>) {
-    let scopes =
-        [wgpu::ErrorFilter::OutOfMemory, wgpu::ErrorFilter::Internal, wgpu::ErrorFilter::Validation].map(|filter| device.push_error_scope(filter));
+    let scopes = crate::ErrorScopes::push(device);
     let value = f();
     let mut failed = None;
-    for scope in scopes.into_iter().rev() {
-        let mut popped = std::pin::pin!(scope.pop());
+    for scope in scopes.pop() {
+        let mut popped = std::pin::pin!(scope);
         let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
         if let std::task::Poll::Ready(Some(error)) = std::future::Future::poll(popped.as_mut(), &mut cx) {
             failed.get_or_insert(error);
