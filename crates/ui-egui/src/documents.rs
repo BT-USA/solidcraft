@@ -3705,7 +3705,7 @@ fn revert_now(app: &mut SolveApp) {
         return;
     }
     if !solidcraft_engine::io::vfs::is_file(&path) {
-        app.set_status(format!("{path}: the file is not there to revert to"), true);
+        app.set_localized_status(format!("{path}: the file is not there to revert to"), true);
         return;
     }
     let active = app.docs.active;

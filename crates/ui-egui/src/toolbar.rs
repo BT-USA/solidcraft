@@ -1054,7 +1054,7 @@ pub(crate) fn download_design(app: &mut SolveApp) {
         .map_err(|e| e.to_string())
         .and_then(|bytes| app.services.download_design.as_ref().map_or(Ok(()), |download| download(&name, &bytes)));
     match result {
-        Ok(()) => app.set_status(format!("Downloaded {name}"), false),
+        Ok(()) => app.set_localized_status(format!("Downloaded {name}"), false),
         Err(e) => app.set_status(format!("Download design: {e}"), true),
     }
 }
@@ -6548,6 +6548,24 @@ mod app_bar_tests {
         assert_eq!(h.app.session.path.as_deref(), Some(path.as_str()));
         let saved = solidcraft_engine::io::read_design(&std::fs::read(path).unwrap()).unwrap();
         assert_eq!(saved, *h.app.session.doc);
+    }
+
+    /// Download design says which file it handed over. The name is the English stitch
+    /// diagnostic plus `.sc`, and German must not rewrite that name.
+    #[cfg(unix)]
+    #[test]
+    fn german_download_status_keeps_a_stitch_diagnostic_file_name() {
+        let mut h = crate::scenario::Harness::new();
+        h.app.preferences.language = "de".into();
+        let _language = solidcraft_ui_text::scope("de");
+        h.app.run("solid.box", json!({"length":2,"width":3,"height":4})).unwrap();
+        // `{doc.name}.{DESIGN_EXT}` is the stitch file name. The sentence's period is the dot before `sc`.
+        h.app.session.doc_mut().name = "Stitch result `A` remains open (boundary edges: 2)".into();
+        h.app.services.download_design = Some(Box::new(|_, _| Ok(())));
+        let name = format!("{}.{}", h.app.session.doc.name, solidcraft_engine::io::DESIGN_EXT);
+        download_design(&mut h.app);
+        let status = h.app.status.as_ref().map(|status| status.0.clone()).unwrap_or_default();
+        assert_eq!(status, format!("Downloaded {name}"));
     }
 }
 

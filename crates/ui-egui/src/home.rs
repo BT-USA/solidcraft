@@ -682,7 +682,7 @@ pub fn open_recent(app: &mut SolveApp, path: &str) {
             restore(path);
             return;
         }
-        app.set_status(format!("{} is no longer there", crate::display_user_path(path)), true);
+        app.set_localized_status(format!("{} is no longer there", crate::display_user_path(path)), true);
         return;
     }
     app.open_chosen_file(path);

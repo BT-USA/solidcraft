@@ -250,7 +250,7 @@ fn begin_wait(app: &mut SolveApp, params: Value, result: &Value) {
     let spec = params["slicer"].as_str().unwrap_or_default().to_string();
     let Some(slicer) = slicers::resolve(&spec) else {
         // Started, but it can't be found again to be sent the file: say so rather than go quiet.
-        app.set_status(solidcraft_ui_text::format("ui.slicer_lost", &[("slicer", &name), ("path", &path)]), true);
+        app.set_localized_status(solidcraft_ui_text::format("ui.slicer_lost", &[("slicer", &name), ("path", &path)]), true);
         return;
     };
     // Same reading as `slicers::wait_for_ready`: when `busctl` is missing or fails, send; when it is
@@ -291,7 +291,7 @@ pub fn tick_wait(app: &mut SolveApp, ctx: &egui::Context) {
         }
         report(app, &result);
     } else {
-        app.set_status(solidcraft_ui_text::format("ui.slicer_no_response", &[("slicer", &wait.slicer.name), ("path", &path)]), true);
+        app.set_localized_status(solidcraft_ui_text::format("ui.slicer_no_response", &[("slicer", &wait.slicer.name), ("path", &path)]), true);
     }
 }
 

@@ -75,12 +75,14 @@ pub(crate) fn open_linked(app: &mut SolveApp, link: &Value) {
     if link["found"].is_null() {
         match link["host"].as_str() {
             Some(host) => app.network_prompt = Some(NetworkPrompt { hosts: vec![host.to_string()], then: Then::OpenLinked(file.to_string()) }),
-            None => app.set_status(format!("{file}: {}", link["reason"].as_str().unwrap_or("not a file")), true),
+            None => {
+                app.set_localized_status(format!("{file}: {}", crate::i18n::tr_diagnostic(link["reason"].as_str().unwrap_or("not a file"))), true)
+            }
         }
         return;
     }
     if link["found"] != true {
-        app.set_status(format!("Linked design not found: {file}"), true);
+        app.set_localized_status(format!("Linked design not found: {file}"), true);
         return;
     }
     app.open_path_async(file);

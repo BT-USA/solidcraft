@@ -112,7 +112,10 @@ pub(crate) fn written(app: &mut SolveApp, path: &str, reply: &serde_json::Value)
     };
     match opened {
         Ok(()) => app.set_status(opened_status(super::export::outside_count(&reply["outside_sheet"])), false),
-        Err(e) => app.set_status(solidcraft_ui_text::format("ui.drawing_print.not_opened", &[("path", path), ("reason", &e)]), true),
+        Err(e) => app.set_localized_status(
+            solidcraft_ui_text::format("ui.drawing_print.not_opened", &[("path", path), ("reason", &crate::i18n::tr_diagnostic(&e))]),
+            true,
+        ),
     }
 }
 

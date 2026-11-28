@@ -29,16 +29,20 @@ pub(crate) fn offer(app: &mut SolveApp, result: &Value) {
     let Some(report) = result.get("loss_report").and_then(|r| serde_json::from_value::<LossReport>(r.clone()).ok()) else { return };
     let text = |key: &str| result.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
     let plugin = text("plugin");
-    app.set_status(
+    let name = text("name");
+    // The design name stays literal. An English engine diagnostic in the summary is translated
+    // once; importer text that is already in the user's language does not match those patterns.
+    app.set_localized_status(
         if report.summary.is_empty() {
-            format("import_report.opened", &[("name", &text("name")), ("plugin", &plugin)])
+            format("import_report.opened", &[("name", &name), ("plugin", &plugin)])
         } else {
-            format("import_report.opened_summary", &[("name", &text("name")), ("plugin", &plugin), ("summary", &report.summary)])
+            let summary = crate::i18n::tr_diagnostic(&report.summary);
+            format("import_report.opened_summary", &[("name", &name), ("plugin", &plugin), ("summary", &summary)])
         },
         false,
     );
     let outline = outline(&report.details, SHOWN);
-    app.import_report = Some(Shown { design: text("name"), plugin, report, outline, open: true });
+    app.import_report = Some(Shown { design: name, plugin, report, outline, open: true });
 }
 
 /// Plugins › Last import report…: show the last import's report again.
@@ -253,7 +257,7 @@ fn save(app: &mut SolveApp) {
         let written = if as_json { json } else { Ok(text) }
             .and_then(|body| solidcraft_engine::io::vfs::write(&path, body.as_bytes()).map_err(|e| e.to_string()));
         match written {
-            Ok(()) => app.set_status(format("import_report.saved", &[("path", crate::display_user_path(&path))]), false),
+            Ok(()) => app.set_localized_status(format("import_report.saved", &[("path", crate::display_user_path(&path))]), false),
             Err(error) => app.set_status(format("import_report.save_failed", &[("error", &error)]), true),
         }
     });
@@ -572,5 +576,27 @@ mod tests {
         shown.open = false;
         crate::plugin_menu::choose(&mut app, "last_import_report");
         assert!(app.import_report.as_ref().is_some_and(|s| s.open), "Plugins › Last import report… opens it again");
+    }
+
+    /// Save report… says where the report went. A picked path whose name is the English
+    /// stitch diagnostic stays literal in the German status.
+    #[cfg(unix)]
+    #[test]
+    fn german_import_report_save_keeps_a_stitch_diagnostic_file_name() {
+        crate::i18n::install();
+        let mut h = crate::scenario::Harness::new();
+        h.app.preferences.language = "de".into();
+        let _language = solidcraft_ui_text::scope("de");
+        let reply = serde_json::json!({"name":"Bracket","plugin":"Sample","loss_report":{"summary":"done","items":[]}});
+        offer(&mut h.app, &reply);
+        let slot: crate::picker_test_support::Slot = Default::default();
+        crate::picker_test_support::save(&mut h.app, &slot);
+        save(&mut h.app);
+        let path = h.dir.join("Stitch result `A` remains open (boundary edges: 2).sc").to_string_lossy().into_owned();
+        *slot.borrow_mut() = Some(Some(path.clone()));
+        crate::file_picker::tick(&mut h.app, &h.ctx);
+        let status = h.app.status.as_ref().map(|status| status.0.clone()).unwrap_or_default();
+        assert_eq!(status, format!("Importbericht gespeichert unter {path}"));
+        assert!(!status.contains("Das Ergebnis des Vernähens"), "{status}");
     }
 }

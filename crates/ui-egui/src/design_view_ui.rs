@@ -446,13 +446,13 @@ fn open_new_window(app: &mut SolveApp, view: Option<&str>) {
     let name = crate::i18n::tr_name(&documents::tab_name(app, &app.session));
     let path = app.session.path.clone().filter(|_| !new_window::needs_save_first(app.session.path.as_deref(), app.session.is_dirty()));
     let Some(path) = path else {
-        app.set_status(solidcraft_ui_text::format("ui.new_window.save_first", &[("name", &name)]), false);
+        app.set_localized_status(solidcraft_ui_text::format("ui.new_window.save_first", &[("name", &name)]), false);
         return;
     };
     match new_window::open_in_new_window(Path::new(&path), view) {
         Ok(()) => {
             documents::close(app, app.docs.active, true);
-            app.set_status(solidcraft_ui_text::format("ui.new_window.opened", &[("name", &name)]), false);
+            app.set_localized_status(solidcraft_ui_text::format("ui.new_window.opened", &[("name", &name)]), false);
         }
         Err(error) => {
             let reason = if error == "ui.new_window.unsupported" { solidcraft_ui_text::tr(&error).to_string() } else { error };

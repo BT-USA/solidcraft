@@ -4084,7 +4084,15 @@ impl SolveApp {
     }
 
     pub fn set_status(&mut self, s: impl Into<String>, error: bool) {
-        let (text, at) = (i18n::tr_diagnostic(&s.into()), now_ms());
+        self.set_localized_status(i18n::tr_diagnostic(&s.into()), error);
+    }
+
+    /// Show text exactly as built. A status that carries a file path or a name the user chose
+    /// goes through here: [`i18n::tr_diagnostic`] looks for engine sentences anywhere in a text,
+    /// so a file named like one would be rewritten. Translate any engine error that is part of
+    /// the text with [`i18n::tr_diagnostic`] before building it.
+    pub(crate) fn set_localized_status(&mut self, text: String, error: bool) {
+        let at = now_ms();
         self.messages.push(&text, error, at);
         self.status = Some((text, at, error));
         self.status_is_tool_hint = false;

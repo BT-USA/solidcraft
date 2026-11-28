@@ -1884,7 +1884,7 @@ pub fn show(app: &mut SolveApp, ctx: &Context, render_state: Option<&egui_wgpu::
                 documents::put_view_window(app, tab, window);
                 if app.now - start >= 2.0 {
                     let _ = close(app, id, false);
-                    app.set_status(solidcraft_ui_text::format("multi_window.open_failed", &[("design", &app.session.doc.name)]), true);
+                    app.set_localized_status(solidcraft_ui_text::format("multi_window.open_failed", &[("design", &app.session.doc.name)]), true);
                     ctx.send_viewport_cmd_to(os_id, ViewportCommand::Close);
                 } else {
                     ctx.show_viewport_deferred(os_id, builder, |_, _| {});
@@ -2113,7 +2113,7 @@ pub fn show(app: &mut SolveApp, ctx: &Context, render_state: Option<&egui_wgpu::
                 let _ = close(app, id, !refused);
             }
             if refused {
-                app.set_status(solidcraft_ui_text::format("multi_window.open_failed", &[("design", &app.session.doc.name)]), true);
+                app.set_localized_status(solidcraft_ui_text::format("multi_window.open_failed", &[("design", &app.session.doc.name)]), true);
             }
             ctx.send_viewport_cmd_to(os_id, ViewportCommand::Close);
             retired.extend(host.viewport.window_scene_slots());

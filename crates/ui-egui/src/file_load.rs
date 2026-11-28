@@ -705,7 +705,7 @@ pub fn begin_request(app: &mut SolveApp, mut request: Request) -> Result<(), Str
                     if request.note.is_none()
                         && let Some(note) = linked_signing_note(&request.path)
                     {
-                        app.set_status(note, false);
+                        app.set_localized_status(note, false);
                     }
                     if let Some(note) = &request.note {
                         app.set_status(note.clone(), false);
@@ -733,7 +733,7 @@ pub fn begin_request(app: &mut SolveApp, mut request: Request) -> Result<(), Str
                 if let Ok(reply) = &r
                     && !request.path.is_empty()
                 {
-                    app.set_status(crate::drawing_workspace::export::saved_status(crate::display_user_path(&request.path), reply), false);
+                    app.set_localized_status(crate::drawing_workspace::export::saved_status(crate::display_user_path(&request.path), reply), false);
                 }
                 r
             }
@@ -949,7 +949,7 @@ fn recovered(app: &mut SolveApp, request: &Request) {
     if let Some(Ok(_)) = kept {
         let _ = app.session.execute("doc.recovery_discard", &json!({"id": id, "dir": dir}));
     }
-    app.set_status(format!("recovered {}: save it to keep it", request.path), false);
+    app.set_localized_status(format!("recovered {}: save it to keep it", request.path), false);
     app.say_newer_file();
     app.say_plugin_data();
 }
@@ -1807,7 +1807,7 @@ fn behind(app: &mut SolveApp, mut running: Running) {
                 recovered_behind(app, uid, id, dir.as_deref());
             }
             let name = std::path::Path::new(&request.path).file_name().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
-            app.set_status(solidcraft_ui_text::format("file_load.opened_behind", &[("name", &name)]), false);
+            app.set_localized_status(solidcraft_ui_text::format("file_load.opened_behind", &[("name", &name)]), false);
             request.answer(Ok(made.result));
         }
         Err(e) => {
@@ -1873,7 +1873,10 @@ fn land_now(app: &mut SolveApp, mut running: Running) {
             }
             Ok(made) if request.kind.exports() && (!request.sheet_in_reply() || !running.cancelled()) => {
                 if !request.path.is_empty() {
-                    app.set_status(crate::drawing_workspace::export::saved_status(crate::display_user_path(&request.path), &made.result), false);
+                    app.set_localized_status(
+                        crate::drawing_workspace::export::saved_status(crate::display_user_path(&request.path), &made.result),
+                        false,
+                    );
                 }
                 request.answer(Ok(made.result));
             }
@@ -1906,7 +1909,7 @@ fn land_now(app: &mut SolveApp, mut running: Running) {
                 // A design it could not read is said as when that was all it was asked.
                 if let Some(f) = r.as_ref().ok().and_then(|v| v["failed"].as_array()).and_then(|f| f.first()) {
                     let (name, why) = (f["name"].as_str().unwrap_or_default(), f["error"].as_str().unwrap_or_default());
-                    app.set_status(format!("{name}: {why}"), true);
+                    app.set_localized_status(format!("{name}: {}", crate::i18n::tr_diagnostic(why)), true);
                 }
                 // What the file's reading left out is said too.
                 if let Some(w) =
@@ -1969,38 +1972,35 @@ fn land_now(app: &mut SolveApp, mut running: Running) {
                 if let Kind::Recover { .. } = request.kind {
                     recovered(app, request);
                 } else {
-                    app.set_status(
-                        if made.result.get("read_only").and_then(Value::as_bool) == Some(true) {
-                            solidcraft_ui_text::tr("document.opened_read_only").to_string()
-                        } else if let Some(summary) = crate::timeline::import_warning_status(app, &made.result) {
-                            summary
+                    if made.result.get("read_only").and_then(Value::as_bool) == Some(true) {
+                        app.set_status(solidcraft_ui_text::tr("document.opened_read_only").to_string(), false);
+                    } else if let Some(summary) = crate::timeline::import_warning_status(app, &made.result) {
+                        app.set_status(summary, false);
+                    } else {
+                        // Built here, outside the window's language scope: in the language
+                        // chosen, as the other statuses of this file are.
+                        let language = solidcraft_ui_text::Locale::for_language(&app.preferences.language);
+                        // An opened design is named as its tab names it, an inserted one as
+                        // its component is named.
+                        let name = if request.insert() {
+                            made.result.get("component_name").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| {
+                                std::path::Path::new(&request.path)
+                                    .file_stem()
+                                    .map_or_else(|| request.path.clone(), |n| n.to_string_lossy().into_owned())
+                            })
                         } else {
-                            // Built here, outside the window's language scope: in the language
-                            // chosen, as the other statuses of this file are.
-                            let language = solidcraft_ui_text::Locale::for_language(&app.preferences.language);
-                            // An opened design is named as its tab names it, an inserted one as
-                            // its component is named.
-                            let name = if request.insert() {
-                                made.result.get("component_name").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| {
-                                    std::path::Path::new(&request.path)
-                                        .file_stem()
-                                        .map_or_else(|| request.path.clone(), |n| n.to_string_lossy().into_owned())
-                                })
-                            } else {
-                                language.given_name(&app.session.doc.name)
-                            };
-                            // A blank design is replaced in place; anything else gets a tab of its own.
-                            let key = if request.insert() {
-                                "file_load.inserted"
-                            } else if app.docs.count() > tabs {
-                                "file_load.opened_in_tab"
-                            } else {
-                                "file_load.opened"
-                            };
-                            language.format(key, &[("name", &name)])
-                        },
-                        false,
-                    );
+                            language.given_name(&app.session.doc.name)
+                        };
+                        // A blank design is replaced in place; anything else gets a tab of its own.
+                        let key = if request.insert() {
+                            "file_load.inserted"
+                        } else if app.docs.count() > tabs {
+                            "file_load.opened_in_tab"
+                        } else {
+                            "file_load.opened"
+                        };
+                        app.set_localized_status(language.format(key, &[("name", &name)]), false);
+                    }
                     if !request.insert() {
                         app.say_newer_file();
                         app.say_plugin_data();
@@ -2008,7 +2008,7 @@ fn land_now(app: &mut SolveApp, mut running: Running) {
                     } else if request.note.is_none()
                         && let Some(note) = linked_signing_note(&request.path)
                     {
-                        app.set_status(note, false);
+                        app.set_localized_status(note, false);
                     }
                     if let Some(note) = &request.note {
                         app.set_status(note.clone(), false);
@@ -2051,7 +2051,8 @@ fn land_now(app: &mut SolveApp, mut running: Running) {
                     app.finish_command(request.command().0, &Err(e));
                 } else if let Kind::Recover { id, dir } = &request.kind {
                     reoffer(app, id, dir.as_deref());
-                    app.set_status(format!("could not recover {}: {e}. Discard it or choose Later", request.path), true);
+                    let shown = crate::i18n::tr_diagnostic(&e);
+                    app.set_localized_status(format!("could not recover {}: {shown}. Discard it or choose Later", request.path), true);
                 } else {
                     app.set_status(e, true);
                 }
@@ -3585,5 +3586,82 @@ M30
         assert_eq!(asked(&app, "a.stp", None), Some(Value::Bool(true)), "a folder while they are on");
         assert_eq!(asked(&app, "a.step", Some(false)), Some(Value::Bool(false)), "the caller's choice stays");
         assert_eq!(asked(&app, "a.stl", None), None, "a mesh has no folders");
+    }
+
+    /// A file whose name is the English stitch diagnostic. The colon keeps these tests on Unix.
+    #[cfg(unix)]
+    const STITCH_FILE: &str = "Stitch result `A` remains open (boundary edges: 2).sc";
+
+    #[cfg(unix)]
+    fn stitch_path(dir: &std::path::Path) -> String {
+        dir.join(STITCH_FILE).to_string_lossy().into_owned()
+    }
+
+    #[cfg(unix)]
+    fn status_line(app: &SolveApp) -> String {
+        app.status.as_ref().map(|status| status.0.clone()).unwrap_or_default()
+    }
+
+    /// a finished native export (`land_now`, not the wasm copy) says where it saved, and a
+    /// file name that equals an English stitch diagnostic is not rewritten into German.
+    #[cfg(unix)]
+    #[test]
+    fn german_export_status_keeps_a_stitch_diagnostic_file_name() {
+        let mut h = crate::scenario::Harness::new();
+        h.app.preferences.language = "de".into();
+        let _language = solidcraft_ui_text::scope("de");
+        let path = stitch_path(&h.dir);
+        completed_open(&mut h.app, Request::new(&path, Kind::ExportDxf), Session::default());
+        let mut running = h.app.file_load.running.take().expect("the export is running");
+        running.ready = Some(running.rx.recv().expect("the export finished"));
+        land_now(&mut h.app, running);
+        let status = status_line(&h.app);
+        assert_eq!(status, format!("Gespeichert: {path}"));
+        assert!(!status.contains("Das Ergebnis des Vernähens"), "{status}");
+    }
+
+    /// `recovered` names the path it brought back. A blank design has nothing for
+    /// `say_newer_file` or `say_plugin_data` to say afterwards, so that line is what remains.
+    #[cfg(unix)]
+    #[test]
+    fn german_recovered_status_keeps_a_stitch_diagnostic_file_name() {
+        let mut h = crate::scenario::Harness::new();
+        h.app.preferences.language = "de".into();
+        let _language = solidcraft_ui_text::scope("de");
+        let path = stitch_path(&h.dir);
+        let request = Request::new(&path, Kind::Recover { id: "kept".into(), dir: None });
+        recovered(&mut h.app, &request);
+        let status = status_line(&h.app);
+        assert_eq!(status, format!("recovered {path}: save it to keep it"));
+        assert!(!status.contains("Das Ergebnis des Vernähens"), "{status}");
+    }
+
+    /// a design that lands in a tab behind names that file, not a translated diagnostic.
+    #[cfg(unix)]
+    #[test]
+    fn german_opened_behind_status_keeps_a_stitch_diagnostic_file_name() {
+        let mut h = crate::scenario::Harness::new();
+        h.app.preferences.language = "de".into();
+        let _language = solidcraft_ui_text::scope("de");
+        let path = stitch_path(&h.dir);
+        completed_open(&mut h.app, Request::new(&path, Kind::Open), Session::default());
+        let mut running = h.app.file_load.running.take().expect("the open is running");
+        running.ready = Some(running.rx.recv().expect("the open finished"));
+        behind(&mut h.app, running);
+        let status = status_line(&h.app);
+        assert_eq!(status, format!("{STITCH_FILE} in einem neuen Tab geöffnet"));
+        assert!(!status.contains("Das Ergebnis des Vernähens"), "{status}");
+    }
+
+    /// the same sentence, shown as an engine diagnostic and not as a file name, is still
+    /// translated.
+    #[cfg(unix)]
+    #[test]
+    fn german_status_translates_a_bare_stitch_diagnostic() {
+        let mut h = crate::scenario::Harness::new();
+        h.app.preferences.language = "de".into();
+        let _language = solidcraft_ui_text::scope("de");
+        h.app.set_status("Stitch result `A` remains open (boundary edges: 2).", true);
+        assert_eq!(status_line(&h.app), "Das Ergebnis des Vernähens `A` bleibt offen (Randkanten: 2).");
     }
 }
