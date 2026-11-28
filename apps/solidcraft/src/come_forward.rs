@@ -156,7 +156,7 @@ fn commands(minimized: Option<bool>, raised: bool) -> Vec<egui::ViewportCommand>
 /// isn't an X11 window (native Wayland).
 #[cfg(all(unix, not(target_os = "macos")))]
 fn x11_activate(window: &dyn raw_window_handle::HasWindowHandle) -> Result<bool, String> {
-    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use raw_window_handle::RawWindowHandle;
     use x11rb::connection::Connection;
     use x11rb::protocol::xproto::{ClientMessageEvent, ConnectionExt, EventMask};
 
