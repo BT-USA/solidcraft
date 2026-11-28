@@ -925,6 +925,41 @@ mod long_spline_tests {
         assert!(r.bound <= 1e-3 && gap(&over, &r.curve, [0.0, 1.0]) <= r.bound);
     }
 
+    /// Under the cap nothing is reduced or changed, whatever the curve: a rational spline (a
+    /// weighted, quarter-circle-like arc) and an unclamped periodic-style spline go through with
+    /// the same points, weights and knots, and no growth of the edge's tolerance.
+    #[test]
+    fn a_rational_or_unclamped_spline_under_the_cap_is_left_alone() {
+        let w = std::f64::consts::FRAC_1_SQRT_2;
+        let rational = b::Curve::RationalSpline {
+            knots: vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            homogeneous: vec![[2.0, 0.0, 1.0, 1.0], [2.0 * w, 2.0 * w, w, w], [0.0, 2.0, 0.0, 1.0]],
+        };
+        let unclamped = b::Curve::Spline {
+            knots: (0..9).map(|i| f64::from(i) * 0.5).collect(),
+            points: (0..5).map(|i| [f64::from(i), f64::from(i * i) * 0.1, 1.0]).collect(),
+        };
+        for curve in [rational, unclamped] {
+            let r = long_spline::within_cap(curve.clone(), Some(curve.clone()), [0.0, 1.0], 1e-3).unwrap();
+            assert_eq!((&r.curve, r.nurbs.as_ref(), r.bound), (&curve, Some(&curve), 0.0));
+        }
+    }
+
+    /// A rational spline over the cap still gets a refusal that says why and names the record's
+    /// size limit (the record's own check refused it before, as "spline degree or size").
+    #[test]
+    fn a_rational_spline_over_the_cap_names_the_size_limit_and_rational() {
+        let n = long_spline::MAX_POINTS + 1;
+        let rational = b::Curve::RationalSpline {
+            knots: [vec![0.0; 2], (1..n - 1).map(|i| i as f64).collect(), vec![n as f64 - 1.0; 2]].concat(),
+            homogeneous: (0..n).map(|i| [i as f64, 0.0, 0.0, 1.0]).collect(),
+        };
+        let e = long_spline::within_cap(rational, None, [0.0, 1.0], 1e-3).err().unwrap();
+        let text = e.to_string();
+        assert!(matches!(e, ExportError::Unsupported(_)), "{text}");
+        assert!(text.contains("rational") && text.contains(&format!("{n} control points")) && text.contains("4096"), "{text}");
+    }
+
     /// A rational spline over the cap is refused with the reason, whether it is the edge's curve or
     /// the NURBS form of its circle or ellipse: not left for the record's check to fail it.
     #[test]
