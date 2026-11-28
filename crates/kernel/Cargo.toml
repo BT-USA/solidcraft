@@ -52,6 +52,3 @@ solidcore-profile = ["solidcraft-smlib/solidcore-profile"]
 # (docs/kernel-support.md): the operations it takes go to it, the rest stay on solidcore.
 # Off by default; no build we ship, no release and no CI job turns it on.
 backend-occt = ["dep:occt-capi"]
-# A stub kernel holding a box in its own form (`held_stub_box`), for other crates' tests of
-# bodies another kernel holds. No build we ship turns it on.
-test-support = []

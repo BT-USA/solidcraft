@@ -388,14 +388,65 @@ mod tests {
         assert!(mesh_outlines(&[Vec3::ZERO, Vec3::X, Vec3::X * 2.], &[[0, 1, 99], [0, 1, 2]]).is_empty());
     }
 
+    /// A kernel holding a box in its own form: its box, counts and triangles given as made
+    /// when it was set up, its record (a solidcore box's) only if asked.
+    #[derive(Debug)]
+    struct HeldBox {
+        record: solidcore_record::brep::Brep,
+        mesh: kernel::api::HeldMesh,
+        bounds: [[f64; 3]; 2],
+        counts: (usize, usize),
+    }
+
+    impl kernel::api::HeldBody for HeldBox {
+        fn backend(&self) -> kernel::api::BackendId {
+            kernel::api::BackendId("held box")
+        }
+        fn export(&self) -> Result<kernel::api::Exported, kernel::api::BackendError> {
+            Ok(kernel::api::Exported { record: self.record.clone(), history: None })
+        }
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn bounds(&self) -> Option<[[f64; 3]; 2]> {
+            Some(self.bounds)
+        }
+        fn counts(&self) -> Option<(usize, usize)> {
+            Some(self.counts)
+        }
+        fn is_sheet(&self) -> Option<bool> {
+            Some(false)
+        }
+        fn tessellate(&self, _chord: f64, _angle: Option<f64>) -> Option<Result<kernel::api::HeldMesh, kernel::api::BackendError>> {
+            Some(Ok(self.mesh.clone()))
+        }
+    }
+
+    /// A body [`HeldBox`] holds: a solidcore box's triangles and record, taken once here.
+    fn held_box(hi: Vec3) -> Body {
+        let solid = kernel::box_solid(Vec3::ZERO, hi).unwrap();
+        let m = solid.mesh(&kernel::MeshTolerance::chord(0.01)).unwrap();
+        let p = |v: Vec3| [v.x, v.y, v.z];
+        let mesh = kernel::api::HeldMesh {
+            positions: m.positions.iter().copied().map(p).collect(),
+            normals: m.normals.iter().copied().map(p).collect(),
+            triangles: m.triangles.clone(),
+            tri_face: m.tri_face.clone(),
+            edges: m.edges.iter().map(|e| e.iter().copied().map(p).collect()).collect(),
+            edge_faces: m.edge_faces.clone(),
+            seams: m.seams.clone(),
+        };
+        let counts = (solid.face_count(), solid.edge_count());
+        Body::held(Arc::new(HeldBox { record: solid.record().clone(), mesh, bounds: [[0.0; 3], p(hi)], counts }))
+    }
+
     /// A body another kernel holds is drawn and picked as a window draws and picks a body: its
-    /// display mesh (no display plan, so drawn from that mesh), its box and tolerance, a face
-    /// and an edge under the pointer, and the edge nearest a point. Its kernel answers each, so
-    /// its record is never made.
+    /// display mesh (no display plan, so drawn from that mesh), its box and tolerance, whether
+    /// it is closed, and a face and an edge under the pointer. Its kernel answers each, so its
+    /// record is never made.
     #[test]
     fn a_body_another_kernel_holds_is_drawn_and_picked_with_no_record() {
-        let held = kernel::held_stub_box(Vec3::ZERO, Vec3::new(10., 20., 30.)).unwrap();
-        let body = ModelBody::new("Held".into(), held, 1);
+        let body = ModelBody::new("Held".into(), held_box(Vec3::new(10., 20., 30.)), 1);
         let q = crate::display_quality::current();
         assert!(body.gpu_plan_at(q).is_none() && body.plan_mesh_at(q).is_none(), "drawn from its mesh");
         let (mesh, place) = body.mesh_in_place();
@@ -414,7 +465,6 @@ mod tests {
         let mut near = Vec::new();
         index.segments_near(Vec3::new(0., 0., 100.), d, 0.5, 0., |e, _| near.push(e));
         assert!(!near.is_empty() && near.iter().all(|e| mesh.edge_faces[*e].len() == 2));
-        assert!(body.edge_lines().nearest(Vec3::new(5., 0., 0.)).is_some());
         assert_eq!(body.body.held_record_reads(), Some((false, 0)), "{:?}", kernel::record_reads().sites);
         // Its face is the record's face of that number, when the record is made later.
         let plane = body.body.planar_face(face as usize).unwrap();

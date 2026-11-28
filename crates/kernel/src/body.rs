@@ -904,7 +904,8 @@ impl Body {
     /// any mesh from outside is, an error when they do not hold together.
     fn held_mesh(&self, t: &MeshTolerance) -> Option<Result<Mesh>> {
         let made = self.held_answer(|h| h.tessellate(t.chord, t.angle))?;
-        Some(made.map_err(KernelError::from).and_then(crate::held::mesh_of))
+        let faces = self.held_answer(|h| h.counts()).map(|(faces, _)| faces);
+        Some(made.map_err(KernelError::from).and_then(|m| crate::held::mesh_of(m, faces)))
     }
 
     /// Faces of a held body with no triangles at `t`, when its kernel gives its triangles and
@@ -1367,9 +1368,6 @@ impl Body {
             return EdgeLines::default();
         }
         let chord = (self.size() * 1e-3).max(1e-4);
-        if let Some(made) = self.held_mesh(&MeshTolerance::chord(chord)) {
-            return EdgeLines(made.map(|m| m.edges.into_iter().enumerate().collect()).unwrap_or_default());
-        }
         EdgeLines(self.record.edges.iter().enumerate().filter_map(|(i, e)| edge_points(e, chord).ok().map(|pts| (i, pts))).collect())
     }
 

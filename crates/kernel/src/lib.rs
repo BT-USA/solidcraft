@@ -360,10 +360,6 @@ pub use fill::patch_edges_report;
 pub use fill::patch_edges_with;
 pub use held::RecordReadSite;
 pub use held::RecordReads;
-#[cfg(any(test, feature = "test-support"))]
-pub use held::StubBox;
-#[cfg(any(test, feature = "test-support"))]
-pub use held::held_stub_box;
 pub use held::record_reads;
 pub use helix::MAX_HELIX_TURNS;
 pub use helix::require_unfolded_screw_section;
