@@ -96,6 +96,9 @@ pub struct Created {
     pub render_state: Option<RenderState>,
     /// Wakes the loop from other threads.
     pub waker: Waker,
+    /// The main window, for what needs its native handle (its monitor's work area, an X11
+    /// activation request).
+    pub window: Option<Arc<Window>>,
 }
 
 /// Wakes the loop from any thread.
@@ -480,11 +483,12 @@ impl Runner<'_> {
         if self.app.is_none()
             && let Some(create) = self.create.take()
         {
-            let (ctx, render_state) = {
+            let (ctx, render_state, window) = {
                 let shared = self.shared.borrow();
-                (shared.ctx.clone(), shared.painter.render_state())
+                let window = shared.viewports.get(&ViewportId::ROOT).and_then(|root| root.window.clone());
+                (shared.ctx.clone(), shared.painter.render_state(), window)
             };
-            self.app = Some(create(Created { ctx, render_state, waker: self.waker.clone() }));
+            self.app = Some(create(Created { ctx, render_state, waker: self.waker.clone(), window }));
         }
     }
 
