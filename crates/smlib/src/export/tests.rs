@@ -899,6 +899,30 @@ mod long_spline_tests {
         let curve = helix_chain(100, [0.0, 1.0]);
         let r = long_spline::within_cap(curve.clone(), None, [0.0, 1.0], 1e-3).unwrap();
         assert_eq!((r.curve, r.bound), (curve, 0.0));
+        // exactly at the cap is left alone too, and one point over it is brought down to it: the
+        // kernel's reduction is what tells the two apart
+        let at_cap = helix_chain((long_spline::MAX_POINTS - 1) / 3 + 1, [0.0, 1.0]);
+        assert_eq!(count(&at_cap), long_spline::MAX_POINTS);
+        let r = long_spline::within_cap(at_cap.clone(), None, [0.0, 1.0], 1e-3).unwrap();
+        assert_eq!((r.curve, r.bound), (at_cap.clone(), 0.0));
+        // a knot put in the middle of the first piece (Boehm's insertion: each of its three new
+        // points halfway between two neighbours): the same curve, one point over the cap
+        let (knots, points) = match &at_cap {
+            b::Curve::Spline { knots, points } => (knots.clone(), points.clone()),
+            _ => (Vec::new(), Vec::new()),
+        };
+        assert!(points.len() > 4, "a chain is a spline");
+        let mid = |p: [f64; 3], q: [f64; 3]| [0, 1, 2].map(|c| (p[c] + q[c]) / 2.0);
+        let mut over_points = vec![points[0], mid(points[0], points[1]), mid(points[1], points[2]), mid(points[2], points[3])];
+        over_points.extend_from_slice(&points[3..]);
+        let mut over_knots = knots[..4].to_vec();
+        over_knots.push((knots[3] + knots[4]) / 2.0);
+        over_knots.extend_from_slice(&knots[4..]);
+        let over = b::Curve::Spline { knots: over_knots, points: over_points };
+        assert_eq!(count(&over), long_spline::MAX_POINTS + 1);
+        let r = long_spline::within_cap(over.clone(), None, [0.0, 1.0], 1e-3).unwrap();
+        assert_eq!(count(&r.curve), long_spline::MAX_POINTS);
+        assert!(r.bound <= 1e-3 && gap(&over, &r.curve, [0.0, 1.0]) <= r.bound);
     }
 
     /// A rational spline over the cap is refused with the reason, whether it is the edge's curve or

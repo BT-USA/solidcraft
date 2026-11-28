@@ -177,7 +177,7 @@ pub fn reduce_to_points(
         return Ok((curve.clone(), 0.0));
     }
     run("curve_knots::reduce_to_points", |_| {
-        let done = reduce_to_points_of(nurb, cap, budget, keep);
+        let done = reduce_to_points_of(nurb, cap, budget, keep)?;
         Ok(if done.reached {
             record_of(&done.curve).map(|c| (c, done.bound))
         } else {
@@ -877,6 +877,70 @@ mod tests {
         // the ends do not move
         for t in [0.0, 1.0] {
             assert_eq!(long_at(&c, t), long_at(&reduced, t));
+        }
+    }
+
+    /// Knots inserted exactly add points and no shape: taking them out costs nothing, so a curve
+    /// that reduces to the cap alone reduces to it with a thousand of them added, however many
+    /// knots there are to try.
+    #[test]
+    fn exact_extra_knots_do_not_make_a_reducible_curve_refused() {
+        let m = 3000usize;
+        let mut knots = vec![0.0; 4];
+        knots.extend((1..m - 3).map(|i| i as f64));
+        knots.extend([(m - 3) as f64; 4]);
+        let points: Vec<[f64; 3]> = (0..m)
+            .map(|i| {
+                let amp = if i < 2500 { 1.0 } else { 0.5 };
+                [i as f64 * 0.3, if i % 2 == 0 { amp } else { -amp }, 0.0]
+            })
+            .collect();
+        let base = Curve::Spline { knots, points };
+        // the budget is the cheapest single removal of the base curve, and a hundredth over
+        let cheapest = (1..m - 3)
+            .filter_map(|i| remove_knot(&base, i as f64, f64::MAX).ok().map(|(_, b)| b))
+            .fold(f64::MAX, f64::min);
+        let budget = cheapest * 1.01;
+        assert!(reduce_to_points(&base, m - 1, budget, &[]).is_ok());
+        let mut padded = base.clone();
+        for i in 0..1023 {
+            padded = insert_knot(&padded, f64::from(i) + 0.5).unwrap();
+        }
+        assert_eq!(count_of(&padded), m + 1023);
+        let (reduced, bound) = reduce_to_points(&padded, m - 1, budget, &[]).unwrap();
+        assert_eq!(count_of(&reduced), m - 1);
+        assert!(bound <= budget, "bound {bound} budget {budget}");
+    }
+
+    /// The work grows a little faster than the number of points, not as its square: a trace of
+    /// 50401 points (16800 pieces) comes down to the record's cap well inside a few seconds.
+    #[test]
+    fn a_very_long_chain_comes_down_in_time() {
+        let pieces = if cfg!(debug_assertions) { 2801 } else { 16801 };
+        let c = chain(pieces, [0.0, 1.0], helix, dhelix);
+        let budget = 2e-3;
+        let started = std::time::Instant::now();
+        let (reduced, bound) = reduce_to_points(&c, 4096, budget, &[0.0, 1.0]).unwrap();
+        let took = started.elapsed();
+        assert!(count_of(&reduced) <= 4096 && bound <= budget);
+        assert!(gap(&c, &reduced, [0.0, 1.0]) <= bound);
+        // a quadratic reduction took 3 minutes here; this has 10 times the room of what it needs
+        if !cfg!(debug_assertions) {
+            assert!(took.as_secs_f64() < 5.0, "{took:?}");
+        }
+    }
+
+    /// The kernel's own function takes no budget that is not a number, finite and positive, as
+    /// an error and not a loop.
+    #[test]
+    fn the_kernels_reduction_refuses_a_budget_that_is_not_a_usable_number() {
+        let Curve::Spline { knots, points } = chain(301, [0.0, 1.0], helix, dhelix) else {
+            panic!("a chain is a spline");
+        };
+        let nurb = long_nurb_of(&knots, &points).unwrap();
+        for budget in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 0.0, -1.0] {
+            let r = solidcore::nurbs::crv_reduce::reduce_to_points(nurb.clone(), 600, budget, &[]);
+            assert!(r.is_err(), "{budget}");
         }
     }
 
