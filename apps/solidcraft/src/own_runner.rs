@@ -132,7 +132,10 @@ impl runner::App for OnRunner {
 /// the same viewport, device setup, settings file and app. `x11` starts winit on X11 (Linux).
 pub fn run(
     options: eframe::NativeOptions,
-    creator: impl FnOnce(&eframe::CreationContext<'_>) -> Result<crate::App, Box<dyn std::error::Error + Send + Sync>>,
+    creator: impl FnOnce(
+        &eframe::CreationContext<'_>,
+        Option<std::sync::Arc<winit::window::Window>>,
+    ) -> Result<crate::App, Box<dyn std::error::Error + Send + Sync>>,
     x11: bool,
     wake: &crate::control_server::Wake,
 ) -> eframe::Result {
@@ -172,16 +175,13 @@ pub fn run(
         let mut cc = eframe::CreationContext::_new_kittest(ctx.clone());
         cc.storage = Some(&settings);
         cc.wgpu_render_state = render_state.clone();
-        let made = creator(&cc);
+        // eframe's `CreationContext` has no window here; the app takes ours.
+        let made = creator(&cc, window);
         drop(cc);
         let mut frame = eframe::Frame::_new_kittest();
         frame.wgpu_render_state = render_state;
         match made {
-            Ok(mut app) => {
-                // eframe's `Frame` has no window here; the app takes the native handle from ours.
-                app.native_window = window;
-                Box::new(OnRunner { app, frame, settings, ctx, persist_window })
-            }
+            Ok(app) => Box::new(OnRunner { app, frame, settings, ctx, persist_window }),
             Err(e) => {
                 *failed_in_create.borrow_mut() = Some(e.to_string());
                 Box::new(Closing)

@@ -1950,7 +1950,16 @@ fn main() -> eframe::Result {
     #[cfg(not(all(unix, not(target_os = "macos"))))]
     let own_x11 = false;
     let own_wake = wake.clone();
-    let make = move |cc: &eframe::CreationContext<'_>| -> Result<App, Box<dyn std::error::Error + Send + Sync>> {
+    // `native_window`: the main window when our own runner made it, whose `CreationContext` has
+    // none (`own_runner`); eframe's `CreationContext` has it otherwise.
+    let make = move |cc: &eframe::CreationContext<'_>,
+                     native_window: Option<std::sync::Arc<winit::window::Window>>|
+          -> Result<App, Box<dyn std::error::Error + Send + Sync>> {
+        #[cfg(target_os = "windows")]
+        let creation_window: &dyn raw_window_handle::HasWindowHandle = match &native_window {
+            Some(window) => window.as_ref(),
+            None => cc,
+        };
         created_in_app.store(true, std::sync::atomic::Ordering::SeqCst);
         solidcraft_engine::crash::phase("app setup");
         mark("window and device ready");
@@ -1980,7 +1989,7 @@ fn main() -> eframe::Result {
         {
             // Windows: the taskbar button shows the mark even when slow first frames keep the
             // taskbar waiting for the window's icon.
-            if !native_frame::set_class_icon(cc) {
+            if !native_frame::set_class_icon(creation_window) {
                 solidcraft_engine::note!("SolidCraft window: no class icon; the taskbar may show a generic one");
             }
             // Every window that draws SolidCraft's title bar hands it to Windows: the main
@@ -1988,7 +1997,7 @@ fn main() -> eframe::Result {
             native_frame::register(&cc.egui_ctx);
             // The OS hit test offers the resize border, at the window's DPI, from the first
             // message (#1381).
-            app.native_resize_border = custom_titlebar && native_frame::install(cc);
+            app.native_resize_border = custom_titlebar && native_frame::install(creation_window);
             if custom_titlebar && !app.native_resize_border {
                 solidcraft_engine::note!("SolidCraft window: no native resize border; egui edge zones instead");
             }
@@ -2251,7 +2260,7 @@ fn main() -> eframe::Result {
             up: false,
             take_focus_unwanted: control_port.is_some(),
             come_forward: come_forward::ComeForward::default(),
-            native_window: None,
+            native_window,
             gpu,
             unkept: Vec::new(),
             #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
@@ -2270,7 +2279,7 @@ fn main() -> eframe::Result {
     let result = if own_runner {
         own_runner::run(options, make, own_x11, &own_wake)
     } else {
-        eframe::run_native("SolidCraft", options, Box::new(move |cc| make(cc).map(|app| Box::new(app) as Box<dyn eframe::App>)))
+        eframe::run_native("SolidCraft", options, Box::new(move |cc| make(cc, None).map(|app| Box::new(app) as Box<dyn eframe::App>)))
     };
     control_server::remove_token_file();
     single_instance::stop();
