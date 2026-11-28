@@ -14,9 +14,14 @@ use crate::sweep_path::RailFit;
 use crate::{KernelError, Result};
 
 const MAX_SEGS: usize = 20_000;
+pub const BUILD_PARAMETER_LIMIT: f64 = 1e7;
+
+pub(crate) fn build_parameter_in_range(x: f64) -> bool {
+    x.is_finite() && x.abs() < BUILD_PARAMETER_LIMIT
+}
 
 fn finite(x: f64, what: &str) -> Result<f64> {
-    if x.is_finite() && x.abs() < 1e7 { Ok(x) } else { Err(KernelError::Invalid(format!("{what} = {x}"))) }
+    if build_parameter_in_range(x) { Ok(x) } else { Err(KernelError::Invalid(format!("{what} = {x}"))) }
 }
 
 /// A region numbered on its own, as given.
@@ -224,6 +229,14 @@ pub fn revolve_whole_sides(
     revolve_regions(plane, regions, axis_origin, axis_dir, angle, RevolveProfile::JoinFreeForm(one_curve))
 }
 
+/// World radial from the revolve axis to the profile's farthest point, after the corner snap
+/// [`revolve`] uses; `None` when the profile lies on the axis. Builds no solid.
+pub fn revolve_radial(plane: &Plane, region: &Region2, axis_origin: Vec2, axis_dir: Vec2) -> Result<Option<Vec3>> {
+    // Any angle past the zero check: only the side is read.
+    let mut plans = revolved(plane, std::slice::from_ref(region), axis_origin, axis_dir, 1.0, RevolveProfile::AsDrawn, |plan| Ok(plan.radial))?;
+    Ok(plans.pop().flatten().filter(|radial| radial.is_finite()))
+}
+
 /// How near the axis (mm) a profile corner between two lines goes onto it when revolved. A sketch
 /// leaves a corner 0.00001 mm off the axis line when no constraint holds it there. Revolved, that
 /// corner made a cone face too thin to see, which broke STEP files and booleans (#17528). One
@@ -259,6 +272,9 @@ pub(crate) struct RevolutionPlan {
     pub origin: Vec3,
     pub axis: Vec3,
     pub angle: f64,
+    /// From the axis to the profile's farthest point, once its corners are on the axis; `None`
+    /// when the profile lies on the axis.
+    pub radial: Option<Vec3>,
 }
 
 /// [`revolve`], [`revolve_whole`] and [`revolve_whole_sides`]'s revolution of `regions`, checked
@@ -357,7 +373,7 @@ fn revolved<T>(
         let angle = if axis.cross(radial).dot(plane.normal()) < 0.0 { -angle } else { angle };
         let RevolveProfile::JoinFreeForm(one_curve) = profile else {
             let pieces = crate::smlib_sweeps::pieces(given.oriented().loops());
-            out.push(each(RevolutionPlan { pieces, origin: o, axis, angle })?);
+            out.push(each(RevolutionPlan { pieces, origin: o, axis, angle, radial: (neg || pos).then_some(radial) })?);
             continue;
         };
         // Pieces of one curve: free-form segments of one degree that the caller says are one curve. Each loop
@@ -376,7 +392,7 @@ fn revolved<T>(
             }
             k += l.lp.segs.len();
         }
-        out.push(each(RevolutionPlan { pieces: swept, origin: o, axis, angle })?);
+        out.push(each(RevolutionPlan { pieces: swept, origin: o, axis, angle, radial: (neg || pos).then_some(radial) })?);
     }
     Ok(out)
 }

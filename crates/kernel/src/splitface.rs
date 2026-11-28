@@ -865,6 +865,23 @@ pub fn has_cap_at(body: &Body, plane: &Plane, height: f64, span: f64) -> bool {
         .any(|p| solidcore_ops::cap::is_square_plane_at_height(a3(p.origin), a3(p.normal()), a3(plane.origin), n, height, tol))
 }
 
+/// Whether the swept body's named end cap lies on the target plane and faces its specified side.
+pub fn has_sweep_end_cap_at(body: &Body, plane: &Plane, positive: bool) -> bool {
+    let Some(history) = body.history() else { return false };
+    let tol = body.record().tolerance.min(0.25 * body.size());
+    let normal = plane.normal();
+    history
+        .faces
+        .iter()
+        .enumerate()
+        .filter(|(_, face)| face.origins.contains(&FaceOrigin::Cap { end: true }))
+        .filter_map(|(i, _)| body.planar_face(i))
+        .any(|cap| {
+            let outward = cap.normal();
+            (outward.dot(normal) > 0.0) == positive && outward.cross(normal).len() <= 1e-12 && plane.height(cap.origin).abs() <= tol
+        })
+}
+
 /// The record edges of the section a split made (the faces with no origin in the body it
 /// split).
 fn section_edges(part: &Body) -> Vec<usize> {

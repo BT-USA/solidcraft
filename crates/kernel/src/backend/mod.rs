@@ -86,6 +86,7 @@ impl From<KernelError> for BackendError {
     fn from(e: KernelError) -> BackendError {
         match e {
             KernelError::Invalid(m) => BackendError::Invalid(m),
+            e @ KernelError::HalfSpaceOutOfRange => BackendError::Invalid(e.to_string()),
             // The same words the record check gave before this had its own variant.
             KernelError::CoordinateCeiling => BackendError::Invalid(solidcore_record::brep::Invalid(crate::BREP_COORDINATE_CEILING).to_string()),
             KernelError::TooLarge(why) => {

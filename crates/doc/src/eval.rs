@@ -13678,7 +13678,13 @@ fn feature_tools_with_constructor(
                     }
                 };
                 let plane = resolve().map_err(|e| DocError::Invalid(format!("revolve to plane `{name}`: {e}")))?;
-                return revolve_to_plane(&ss, &regions, (o, d), &plane).map_err(|e| DocError::Invalid(format!("revolve to plane `{name}`: {e}")));
+                return revolve_to_plane(&ss, &regions, (o, d), &plane).map_err(|e| {
+                    let why = match e {
+                        DocError::Kernel(kernel::KernelError::HalfSpaceOutOfRange) => plane_out_of_range(&doc.units),
+                        e => e.to_string(),
+                    };
+                    DocError::Invalid(format!("revolve to plane `{name}`: {why}"))
+                });
             }
             let to = to.as_ref().and_then(crate::RevolveTo::point);
             // To Object is in this feature's component frame: the model as seen from there.
@@ -18768,19 +18774,33 @@ fn half_space_traced(input: &Traced, plane: &Plane, positive: bool, cap: &str) -
     Ok(Some(Traced::step(part, &[input, &tool])))
 }
 
-/// Sweep to the first extremum of signed plane distance, then retain the sketch side. Every
-/// point of a one-sided region shares a starting radial ray, so its signed distance along the
-/// orbit differs only by an axial constant and a positive radial scale. At the extremum the
-/// entire region has had one chance to cross the target; nothing has crossed back.
+/// The refusal for a plane too far from the body to cut it, with the limit in the design's own
+/// length unit.
+fn plane_out_of_range(units: &str) -> String {
+    let unit = expr::length_unit_or_mm(units);
+    let scale = expr::unit_info(unit).map_or(1.0, |(_, scale)| scale);
+    format!("the plane is out of range (it must be less than {} {unit} from the profile)", (kernel::BUILD_PARAMETER_LIMIT / scale).round())
+}
+
+/// If the target contains the axis, revolve directly to its first crossing. Otherwise sweep to
+/// the first extremum of signed plane distance, then retain the sketch side. Every point of a
+/// one-sided region shares a starting radial ray, so its signed distance along the orbit differs
+/// only by an axial constant and a positive radial scale. At the extremum the entire region has
+/// had one chance to cross the target; nothing has crossed back.
 fn revolve_to_plane(ss: &SolvedSketch, regions: &[Region2], (origin, axis): (Vec2, Vec2), target: &Plane) -> Result<Vec<Traced>> {
     use kernel::history::{Change, FaceOrigin};
 
     let pivot = ss.plane.to_world(origin);
+    // The half-space tool needs a finite distance from the plane's origin to the revolved body.
+    if !target.origin.dist(pivot).is_finite() {
+        return Err(DocError::Kernel(kernel::KernelError::HalfSpaceOutOfRange));
+    }
     let normal = target.normal();
     let axis_world = ss.plane.dir_to_world(axis).normalized().ok_or_else(|| DocError::Invalid("the revolve axis has no direction".into()))?;
-    if normal.dot(axis_world).abs() <= 1e-9 && target.height(pivot).abs() <= 1e-8 {
-        return Err(DocError::Invalid("the plane contains the revolve axis".into()));
-    }
+    // Use the direct sweep only when the axis is in the plane to floating-point roundoff.
+    // A small tilt can put the cap off the target over the height of a large profile.
+    let roundoff = 4.0 * f64::EPSILON;
+    let through_axis = normal.dot(axis_world).abs() <= roundoff && target.height(pivot).abs() <= (roundoff * (pivot - target.origin).len()).min(1e-8);
     let misses = || DocError::Invalid("the plane is out of reach for the revolved profile".into());
     let mut out = Vec::new();
     for region in regions {
@@ -18792,15 +18812,48 @@ fn revolve_to_plane(ss: &SolvedSketch, regions: &[Region2], (origin, axis): (Vec
         let points = || region.outer.segs.iter().flat_map(|seg| (0..=degree).map(|i| ss.plane.to_world(seg.point_at(i as f64 / degree as f64))));
         let tangent = ss.plane.normal();
         let radial = tangent.cross(axis_world);
-        let side = points()
-            .map(|p| (p - pivot).dot(radial))
-            .find(|distance| distance.abs() > 1e-8)
-            .ok_or_else(|| DocError::Invalid("the profile lies on the revolve axis".into()))?;
+        let mut radial_distances = points().map(|p| (p - pivot).dot(radial)).filter(|distance| distance.abs() > 1e-8);
+        let side = if through_axis {
+            // The revolve builder can snap a corner just across the axis onto it.
+            radial_distances.max_by(|a, b| a.abs().total_cmp(&b.abs()))
+        } else {
+            radial_distances.next()
+        }
+        .ok_or_else(|| DocError::Invalid("the profile lies on the revolve axis".into()))?;
         let radial = radial * side.signum();
+        let build = |sweep| -> Result<Traced> {
+            let body = kernel::revolve(&ss.plane, std::slice::from_ref(region), origin, axis, sweep)?.pop().ok_or_else(misses)?;
+            Ok(crate::lineage::ProfileRoles::swept(Some(ss), Some(region)).tool(body, None))
+        };
+        if through_axis {
+            // Positive rotation follows the sketch normal. For a plane through the axis the
+            // signed distance is radius times a*cos(angle) + b*sin(angle), so the first crossing
+            // is shared by all radii and lies within a half turn.
+            let (a, b) = (normal.dot(radial), normal.dot(tangent));
+            // Allow for rounding in the dot product when the two planes coincide.
+            if a.abs() <= roundoff {
+                return Err(DocError::Invalid("the starting profile lies in the target plane".into()));
+            }
+            // Snapping the profile onto the axis can change its radial side. Test the
+            // first crossing for each ray, with the end cap facing the side it enters.
+            let direct = [-a.signum(), a.signum()].into_iter().find_map(|end_side| {
+                let tool = build(a.abs().atan2(end_side * b)).ok()?;
+                kernel::has_sweep_end_cap_at(&tool.body, target, end_side > 0.0).then_some(tool)
+            });
+            if let Some(tool) = direct {
+                out.push(tool);
+                continue;
+            }
+            // A first crossing turned through less than the revolve builder's smallest angle is
+            // a plane nearer the profile's own plane than it resolves, not one out of reach.
+            if a.abs().atan2(b.abs()) < 2e-6 {
+                return Err(DocError::Invalid("the plane is too close to the profile to build the thin solid between them".into()));
+            }
+        }
         let start = points()
             .map(|p| target.height(p))
             .find(|height| height.abs() > 1e-8)
-            .ok_or_else(|| DocError::Invalid("the starting profile must lie to one side of the plane".into()))?;
+            .ok_or_else(|| DocError::Invalid("the starting profile lies in the target plane".into()))?;
         let toward = normal * -start.signum();
         let (a, b) = (toward.dot(radial), toward.dot(tangent));
         if a.hypot(b) <= 1e-9 {
@@ -18810,9 +18863,11 @@ fn revolve_to_plane(ss: &SolvedSketch, regions: &[Region2], (origin, axis): (Vec
         if !(1e-6..std::f64::consts::TAU - 1e-9).contains(&sweep) {
             return Err(misses());
         }
-        let body = kernel::revolve(&ss.plane, std::slice::from_ref(region), origin, axis, sweep)?.pop().ok_or_else(misses)?;
-        let tool = crate::lineage::ProfileRoles::swept(Some(ss), Some(region)).tool(body, None);
-        let trimmed = half_space_traced(&tool, target, start > 0.0, "end")?.ok_or_else(misses)?;
+        let tool = build(sweep)?;
+        // The sweep did reach the plane, so a part the cut leaves empty is a plane nearer the
+        // profile than the kernel resolves, not one out of reach.
+        let too_close = || DocError::Invalid("the plane is too close to the profile to build the thin solid between them".into());
+        let trimmed = half_space_traced(&tool, target, start > 0.0, "end")?.ok_or_else(too_close)?;
         if !kernel::has_cap_at(&trimmed.body, target, 0.0, tool.body.size()) {
             return Err(misses());
         }
@@ -23128,7 +23183,11 @@ fn split_by_plane_traced(input: &Traced, plane: &Plane) -> Result<Vec<Traced>> {
 
 /// The part of `input` on one side of a plane (`None` when nothing is there), with its history.
 fn half_traced(input: &Traced, plane: &Plane, positive: bool) -> Result<Option<Traced>> {
-    let (part, tool) = kernel::half_space(&input.body, plane, positive)?;
+    // A plane too far from the body to build the cutting box does not split it.
+    let (part, tool) = match kernel::half_space(&input.body, plane, positive) {
+        Err(kernel::KernelError::HalfSpaceOutOfRange) => return Err(DocError::Invalid("the plane does not split the body".into())),
+        other => other?,
+    };
     let Some(part) = part else { return Ok(None) };
     // The box's cap in the plane: its start cap on the positive side, its end cap on the other.
     let section = Some("section".to_string());

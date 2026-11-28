@@ -14,7 +14,8 @@ use solidcraft_engine::Sel;
 use solidcraft_engine::Session;
 use solidcraft_engine::doc::expr::Kind as ValueKind;
 use solidcraft_engine::doc::{
-    AxisRef, Direction, DomeShape, FeatureKind, FilletStyle, HoleKind, Operation, PatternDistance, PatternKind, PlaneRef, ProfileSel, RevolveTo, ThinSide,
+    AxisRef, Direction, DomeShape, FeatureKind, FilletStyle, HoleKind, Operation, PatternDistance, PatternKind, PlaneRef, ProfileSel, RevolveTo,
+    ThinSide,
 };
 use solidcraft_engine::geom::Aabb3;
 

@@ -214,6 +214,106 @@ fn revolve_to_a_plane_or_planar_face_ends_on_its_support() {
     }
 }
 
+fn check_revolve_stop(s: &Session, target: &str, normal: solidcore_record::Vec3, distance: f64, want: f64) {
+    use solidcraft_geom::{PlaneGeom, Vec3Geom};
+
+    let state = s.model.state();
+    let swept = &state.body("B").unwrap().body;
+    assert!(
+        (0..swept.face_count()).any(|i| swept
+            .planar_face(i)
+            .is_some_and(|p| { p.normal().dot(normal).abs() > 1.0 - EXACT && (p.origin.dot(normal) - distance).abs() < EXACT })),
+        "To {target}: missing the end face on the target plane"
+    );
+    let volume = solidcraft_kernel::measure(swept).unwrap().volume;
+    assert!((volume - want).abs() < want * EXACT, "To {target}: got {volume}, expected {want}");
+}
+
+#[test]
+fn revolve_to_yz_stops_at_a_quarter_turn() {
+    let mut s = Session::default();
+    revolve_stop_profile(&mut s);
+    run(&mut s, "solid.revolve", revolve_stop_params(json!("YZ")));
+
+    // Every radius reaches x = 0 at π/2. The annular sector has volume
+    // (θ/2) · (8² − 5²) · 4.
+    check_revolve_stop(&s, "YZ", solidcore_record::Vec3::X, 0.0, 39.0 * PI);
+}
+
+#[test]
+fn revolve_to_an_angled_plane_through_the_axis_stops_at_its_first_crossing() {
+    use solidcore_record::Vec3;
+    use std::f64::consts::FRAC_1_SQRT_2;
+
+    for (angle, normal_x, volume_factor) in [(45, -FRAC_1_SQRT_2, 19.5), (-45, FRAC_1_SQRT_2, 58.5)] {
+        let mut s = Session::default();
+        run(&mut s, "construct.plane.at_angle", json!({"base": "XZ", "axis": "Z", "angle": format!("{angle} deg"), "name": "Diagonal"}));
+        revolve_stop_profile(&mut s);
+        run(&mut s, "solid.revolve", revolve_stop_params(json!("Diagonal")));
+
+        // Starting on +X, positive rotation about +Z moves toward +Y. The plane y = x
+        // is first crossed at π/4; y = −x is first crossed at 3π/4. For each crossing
+        // the sector has volume (θ/2) · (8² − 5²) · 4.
+        check_revolve_stop(&s, &format!("{angle}°"), Vec3::new(normal_x, FRAC_1_SQRT_2, 0.0), 0.0, volume_factor * PI);
+    }
+}
+
+#[test]
+fn revolve_to_its_sketch_plane_reports_that_the_profile_lies_in_the_plane() {
+    let mut s = Session::default();
+    revolve_stop_profile(&mut s);
+    let before = s.doc.to_json();
+    let error = s.execute("solid.revolve", &revolve_stop_params(json!("XZ"))).unwrap_err().to_string();
+    assert!(
+        error.contains("plane")
+            && (error.contains("profile") || error.contains("sketch"))
+            && (error.contains("lies") || error.contains("already") || error.contains("coincident")),
+        "{error}"
+    );
+    assert_eq!(s.doc.to_json(), before);
+    assert!(s.model.state().bodies.is_empty());
+}
+
+#[test]
+fn revolve_to_offset_planes_matches_the_first_crossing_volume() {
+    use solidcore_record::Vec3;
+
+    for (offset, half_turn) in [(-2.0_f64, PI), (5.0, 0.0)] {
+        let mut s = Session::default();
+        run(&mut s, "construct.plane.offset", json!({"base": "XZ", "offset": offset, "name": "Stop"}));
+        revolve_stop_profile(&mut s);
+        run(&mut s, "solid.revolve", revolve_stop_params(json!("Stop")));
+
+        // At radius r the first crossing is asin(5/r) for y = 5 (tangent at r = 5),
+        // or π + asin(2/r) for y = −2. Integrate 4rθ from 5 to 8.
+        let h = offset.abs();
+        let primitive = |r: f64| 2.0 * (r * r * (half_turn + (h / r).asin()) + h * (r * r - h * h).sqrt());
+        check_revolve_stop(&s, &format!("y = {offset}"), Vec3::Y, offset, primitive(8.0) - primitive(5.0));
+    }
+}
+
+#[test]
+fn revolve_to_a_tilted_plane_matches_the_first_crossing_volume() {
+    use solidcore_record::Vec3;
+    use solidcraft_geom::Vec3Geom;
+
+    let mut s = Session::default();
+    run(
+        &mut s,
+        "construct.plane.three_points",
+        json!({"a": {"point": [0, 2, 0]}, "b": {"point": [1, 2, 0]}, "c": {"point": [0, 1, -4]}, "name": "Tilted"}),
+    );
+    revolve_stop_profile(&mut s);
+    run(&mut s, "solid.revolve", revolve_stop_params(json!("Tilted")));
+
+    // The plane is y = h = 2 + z/4. Integrate r asin(h/r) over r = 5..8 and h = 1..2
+    // with dz = 4 dh. This is the antiderivative in both r and h.
+    let primitive = |r: f64, h: f64| h * r * r / 2.0 * (h / r).asin() + (2.0 * r * r + h * h) / 6.0 * (r * r - h * h).sqrt();
+    let want = 4.0 * (primitive(8.0, 2.0) - primitive(5.0, 2.0) - primitive(8.0, 1.0) + primitive(5.0, 1.0));
+    let normal = Vec3::new(0.0, 1.0, -0.25).normalized().unwrap();
+    check_revolve_stop(&s, "Tilted", normal, 2.0 * normal.y, want);
+}
+
 #[test]
 fn invalid_revolve_stop_planes_leave_the_design_unchanged() {
     let mut s = Session::default();
@@ -232,6 +332,152 @@ fn invalid_revolve_stop_planes_leave_the_design_unchanged() {
     assert_eq!(s.doc.to_json(), before);
 }
 
+fn check_revolve_to_plane_offset_range_error(offset: Value) {
+    let mut s = Session::default();
+    run(&mut s, "construct.plane.offset", json!({"base": "XZ", "offset": offset, "name": "P"}));
+    revolve_stop_profile(&mut s);
+    let before = s.doc.to_json();
+    let error = s.execute("solid.revolve", &revolve_stop_params(json!("P"))).expect_err("the plane is out of range").to_string();
+    assert!(error.contains("`P`") && error.contains("out of range") && !error.contains("invalid input"), "offset {offset}: {error}");
+    assert_eq!(s.doc.to_json(), before);
+}
+
+#[test]
+fn revolve_to_plane_offset_range_reports_large_number() {
+    check_revolve_to_plane_offset_range_error(json!(5e8));
+}
+
+#[test]
+fn revolve_to_plane_offset_range_reports_large_expression() {
+    check_revolve_to_plane_offset_range_error(json!("1e9 mm"));
+}
+
+#[test]
+fn revolve_to_plane_offset_range_allows_reachable_offsets() {
+    // At each radius r the profile first crosses y = 2 at asin(2/r). Integrate
+    // 4r asin(2/r) from 5 to 8 for the volume of the swept rectangle.
+    let primitive = |r: f64| 2.0 * (r * r * (2.0 / r).asin() + 2.0 * (r * r - 4.0).sqrt());
+    let want = primitive(8.0) - primitive(5.0);
+    for offset in [json!(2), json!("2 mm")] {
+        let mut s = Session::default();
+        run(&mut s, "construct.plane.offset", json!({"base": "XZ", "offset": offset, "name": "P"}));
+        revolve_stop_profile(&mut s);
+        run(&mut s, "solid.revolve", revolve_stop_params(json!("P")));
+        check_revolve_stop(&s, &offset.to_string(), solidcore_record::Vec3::Y, 2.0, want);
+    }
+}
+
+/// Volume of the rectangle [r0, r1] x height 4 revolved about Z until it reaches y = d: at radius r
+/// it first meets the plane at asin(d/r), so the volume is 4 * integral of r asin(d/r) dr.
+fn revolve_to_offset_plane_volume(d: f64, r0: f64, r1: f64) -> f64 {
+    let primitive = |r: f64| 2.0 * (r * r * (d / r).asin() + d * (r * r - d * d).sqrt());
+    primitive(r1) - primitive(r0)
+}
+
+/// The half-space box grows with the body's distance from the origin, but only the body's own
+/// size and its height over the plane matter, so a far profile is not refused.
+#[test]
+fn revolve_to_a_plane_builds_for_a_profile_far_from_the_origin() {
+    for (r0, r1) in [(1.6e6, 1.76e6), (1.8e6, 1.98e6)] {
+        let mut s = Session::default();
+        run(&mut s, "construct.plane.offset", json!({"base": "XZ", "offset": 1, "name": "P"}));
+        run(&mut s, "sketch.create", json!({"plane": "XZ", "name": "R"}));
+        run(&mut s, "sketch.rectangle.two_point", json!({"p0": [r0, 0], "p1": [r1, 4]}));
+        run(&mut s, "sketch.finish", json!({}));
+        run(&mut s, "solid.revolve", revolve_stop_params(json!("P")));
+        let want = revolve_to_offset_plane_volume(1.0, r0, r1);
+        check_revolve_stop(&s, &format!("{r0}"), solidcore_record::Vec3::Y, 1.0, want);
+    }
+}
+
+/// A plane a few tens of micrometres from the profile builds its sliver; nearer than the kernel
+/// resolves, the refusal says the plane is too close, not "out of reach".
+#[test]
+fn revolve_to_a_plane_a_few_micrometres_away_builds_or_says_too_close() {
+    for offset in [1e-5_f64, 2e-5, 5e-5, 1e-3] {
+        let mut s = Session::default();
+        run(&mut s, "construct.plane.offset", json!({"base": "XZ", "offset": offset, "name": "P"}));
+        revolve_stop_profile(&mut s);
+        let reply = s.execute("solid.revolve", &revolve_stop_params(json!("P")));
+        if offset >= 5e-5 {
+            reply.expect("a reachable plane builds");
+            let volume = solidcraft_kernel::measure(&s.model.state().body("B").unwrap().body).unwrap().volume;
+            let want = revolve_to_offset_plane_volume(offset, 5.0, 8.0);
+            assert!((volume - want).abs() < want * 1e-3, "offset {offset}: got {volume}, expected {want}");
+        } else {
+            let error = reply.expect_err("a sliver below the kernel's resolution").to_string();
+            assert!(error.contains("too close") && !error.contains("out of reach"), "offset {offset}: {error}");
+        }
+    }
+}
+
+/// The same plane to within tolerance gets the same answer, whether it is 0 or 1e-9 away.
+#[test]
+fn revolve_to_a_plane_within_tolerance_of_the_profile_says_so_alike() {
+    let mut errors = Vec::new();
+    for offset in [0.0_f64, 1e-9, -1e-9] {
+        let mut s = Session::default();
+        run(&mut s, "construct.plane.offset", json!({"base": "XZ", "offset": offset, "name": "P"}));
+        revolve_stop_profile(&mut s);
+        let error = s.execute("solid.revolve", &revolve_stop_params(json!("P"))).expect_err("the plane holds the profile").to_string();
+        assert!(!error.contains("out of reach"), "offset {offset}: {error}");
+        errors.push(error);
+    }
+    assert!(errors.iter().all(|e| e == &errors[0]), "{errors:?}");
+}
+
+#[test]
+fn revolve_to_a_plane_through_the_axis_at_a_tiny_angle_builds_or_says_too_close() {
+    for a in [1e-6_f64, 1e-3] {
+        revolve_through_axis_at(a);
+    }
+}
+
+fn revolve_through_axis_at(a: f64) {
+    let mut s = Session::default();
+    run(
+        &mut s,
+        "construct.plane.three_points",
+        json!({"a": {"point": [0, 0, 0]}, "b": {"point": [0, 0, 1]}, "c": {"point": [a.cos(), a.sin(), 0]}, "name": "P"}),
+    );
+    revolve_stop_profile(&mut s);
+    let reply = s.execute("solid.revolve", &revolve_stop_params(json!("P")));
+    if a < 1e-5 {
+        let error = reply.expect_err("a sliver below the builder's smallest angle").to_string();
+        assert!(error.contains("too close") && !error.contains("out of reach"), "angle {a}: {error}");
+        return;
+    }
+    reply.expect("a reachable plane builds");
+    let volume = solidcraft_kernel::measure(&s.model.state().body("B").unwrap().body).unwrap().volume;
+    let want = a / 2.0 * (64.0 - 25.0) * 4.0;
+    assert!((volume - want).abs() < want * 1e-3, "got {volume}, expected {want}");
+}
+
+/// The out-of-range refusal names the design's unit and its limit in that unit.
+#[test]
+fn revolve_to_plane_range_error_uses_the_design_unit() {
+    let mut s = Session::default();
+    run(&mut s, "document.units", json!({"units": "in"}));
+    run(&mut s, "construct.plane.offset", json!({"base": "XZ", "offset": "5e8 in", "name": "P"}));
+    revolve_stop_profile(&mut s);
+    let error = s.execute("solid.revolve", &revolve_stop_params(json!("P"))).expect_err("out of range").to_string();
+    assert!(error.contains("out of range") && error.contains("393701 in") && !error.contains("mm"), "{error}");
+}
+
+/// A split plane too far from the body says it does not split it, with no cutting tool.
+#[test]
+fn split_body_with_a_far_plane_does_not_talk_of_a_cutting_tool() {
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"corner": [-10, -10, 0], "length": 20, "width": 20, "height": 10, "body_name": "Body1"}));
+    for y in [5e6, 9e6] {
+        let error = s
+            .execute("solid.split_body", &json!({"body": "Body1", "plane": {"origin": [0, y, 0], "normal": [0, 1, 0]}}))
+            .expect_err("the plane is far from the body")
+            .to_string();
+        assert!(error.contains("does not split the body") && !error.contains("cutting tool"), "{error}");
+    }
+}
+
 #[test]
 fn revolve_to_a_point_still_ends_at_its_angle() {
     let mut s = Session::default();
@@ -241,6 +487,234 @@ fn revolve_to_a_point_still_ends_at_its_angle() {
     // A 45-degree turn sweeps one eighth of the full annulus.
     let want = PI * (8.0 * 8.0 - 5.0 * 5.0) * 4.0 / 8.0;
     assert!((volume - want).abs() < want * EXACT, "got {volume}, expected {want}");
+}
+
+/// The fence of case 5: x 0..2, y 0..12, z −2..2, then the usual XZ profile.
+fn fence_beside_profile(s: &mut Session) {
+    run(s, "solid.box", json!({"corner": [0, 0, -2], "length": 2, "width": 12, "height": 4, "body_name": "Fence"}));
+    revolve_stop_profile(s);
+}
+
+#[test]
+fn revolve_to_coincident_angles_reports_the_profile_lies_in_the_plane() {
+    for angle in [0, 180, 360, 720, -360] {
+        let mut s = Session::default();
+        run(&mut s, "construct.plane.at_angle", json!({"base": "XZ", "axis": "Z", "angle": format!("{angle} deg"), "name": "Turn"}));
+        revolve_stop_profile(&mut s);
+        let before = s.doc.to_json();
+        let error = s.execute("solid.revolve", &revolve_stop_params(json!("Turn"))).unwrap_err().to_string();
+        assert!(error.contains("the starting profile lies in the target plane"), "{angle}°: {error}");
+        assert_eq!(s.doc.to_json(), before, "{angle}° changed the design");
+    }
+}
+
+#[test]
+fn revolve_to_a_plane_one_degree_off_stops_at_one_degree() {
+    // 181° and −179° each sit 1° off the profile plane, on opposite sides. V = 78·θ, θ = π/180.
+    let want = 78.0 * PI / 180.0;
+    for angle in [181, -179] {
+        let mut s = Session::default();
+        run(&mut s, "construct.plane.at_angle", json!({"base": "XZ", "axis": "Z", "angle": format!("{angle} deg"), "name": "Turn"}));
+        revolve_stop_profile(&mut s);
+        run(&mut s, "solid.revolve", revolve_stop_params(json!("Turn")));
+        let phi = f64::from(angle) * PI / 180.0;
+        check_revolve_stop(&s, &format!("{angle}°"), solidcore_record::Vec3::new(-phi.sin(), phi.cos(), 0.0), 0.0, want);
+    }
+}
+
+#[test]
+fn revolve_to_yz_from_either_quarter_stops_at_a_quarter_turn() {
+    // 90° and 270° are both the YZ plane. The profile on +X reaches it at π/2: V = 39·π.
+    let want = 39.0 * PI;
+    for angle in [90, 270] {
+        let mut s = Session::default();
+        run(&mut s, "construct.plane.at_angle", json!({"base": "XZ", "axis": "Z", "angle": format!("{angle} deg"), "name": "Turn"}));
+        revolve_stop_profile(&mut s);
+        run(&mut s, "solid.revolve", revolve_stop_params(json!("Turn")));
+        let phi = f64::from(angle) * PI / 180.0;
+        check_revolve_stop(&s, &format!("{angle}°"), solidcore_record::Vec3::new(-phi.sin(), phi.cos(), 0.0), 0.0, want);
+    }
+}
+
+#[test]
+fn revolve_of_a_negative_x_profile_stops_on_the_first_half_plane() {
+    use solidcore_record::Vec3;
+    use std::f64::consts::FRAC_1_SQRT_2;
+
+    // The mirror of the +X profile: +45° is the long way (3π/4), −45° the short way (π/4).
+    for (angle, normal_x, volume_factor) in [(45, -FRAC_1_SQRT_2, 58.5), (-45, FRAC_1_SQRT_2, 19.5)] {
+        let mut s = Session::default();
+        run(&mut s, "construct.plane.at_angle", json!({"base": "XZ", "axis": "Z", "angle": format!("{angle} deg"), "name": "Diagonal"}));
+        run(&mut s, "sketch.create", json!({"plane": "XZ", "name": "R"}));
+        run(&mut s, "sketch.rectangle.two_point", json!({"p0": [-8, 0], "p1": [-5, 4]}));
+        run(&mut s, "sketch.finish", json!({}));
+        run(&mut s, "solid.revolve", revolve_stop_params(json!("Diagonal")));
+        check_revolve_stop(&s, &format!("{angle}°"), Vec3::new(normal_x, FRAC_1_SQRT_2, 0.0), 0.0, volume_factor * PI);
+    }
+}
+
+#[test]
+fn revolve_to_a_face_of_another_body_uses_that_faces_plane() {
+    let mut s = Session::default();
+    fence_beside_profile(&mut s);
+    run(&mut s, "solid.revolve", revolve_stop_params(json!({"face": [0, 11, 0]})));
+    // The x = 0 face is the YZ plane: a quarter turn, V = 39·π.
+    check_revolve_stop(&s, "x = 0", solidcore_record::Vec3::X, 0.0, 39.0 * PI);
+
+    let mut s = Session::default();
+    fence_beside_profile(&mut s);
+    let before = s.doc.to_json();
+    let error = s.execute("solid.revolve", &revolve_stop_params(json!({"face": [1, 0, 0]}))).unwrap_err().to_string();
+    assert!(error.contains("lies") && error.contains("plane"), "{error}");
+    assert_eq!(s.doc.to_json(), before);
+}
+
+#[test]
+fn revolve_of_a_profile_touching_the_axis_stops_on_the_plane() {
+    use solidcore_record::Vec3;
+    use std::f64::consts::FRAC_1_SQRT_2;
+
+    let touching = |s: &mut Session| {
+        run(s, "sketch.create", json!({"plane": "XZ", "name": "R"}));
+        run(s, "sketch.rectangle.two_point", json!({"p0": [0, 0], "p1": [8, 4]}));
+        run(s, "sketch.finish", json!({}));
+    };
+    let mut s = Session::default();
+    touching(&mut s);
+    run(&mut s, "solid.revolve", revolve_stop_params(json!("YZ")));
+    // Quarter turn of the disc r = 0..8, height 4: (π/4) · 64 · 4 = 64·π.
+    check_revolve_stop(&s, "YZ", Vec3::X, 0.0, 64.0 * PI);
+
+    let mut s = Session::default();
+    run(&mut s, "construct.plane.at_angle", json!({"base": "XZ", "axis": "Z", "angle": "45 deg", "name": "Diagonal"}));
+    touching(&mut s);
+    run(&mut s, "solid.revolve", revolve_stop_params(json!("Diagonal")));
+    check_revolve_stop(&s, "45°", Vec3::new(-FRAC_1_SQRT_2, FRAC_1_SQRT_2, 0.0), 0.0, 32.0 * PI);
+}
+
+#[test]
+fn revolve_to_a_plane_joins_cuts_and_intersects_an_existing_block() {
+    // The quarter turn stays in x 0..8, |y| ≤ 8 and |z| ≤ 4, so the 10×20×8 block contains it.
+    // Join keeps the block (1600). Cut and intersect differ from that by the sector 39·π.
+    let quarter = 39.0 * PI;
+    for (operation, want) in [("join", 1600.0), ("cut", 1600.0 - quarter), ("intersect", quarter)] {
+        let mut s = Session::default();
+        run(&mut s, "solid.box", json!({"corner": [0, -10, -4], "length": 10, "width": 20, "height": 8, "body_name": "Block"}));
+        revolve_stop_profile(&mut s);
+        let mut params = revolve_stop_params(json!("YZ"));
+        params["operation"] = json!(operation);
+        params["targets"] = json!(["Block"]);
+        params.as_object_mut().unwrap().remove("body_name");
+        s.execute("solid.revolve", &params).unwrap_or_else(|e| panic!("{operation}: {e}"));
+        assert!(s.model.results.iter().all(|r| r.error.is_none()), "{operation}: {:?}", s.model.results);
+        let names: Vec<_> = s.model.state().bodies.iter().map(|b| b.name.clone()).collect();
+        assert_eq!(names.len(), 1, "{operation}: {names:?}");
+        let volume = body(&mut s, &names[0])["volume_mm3"].as_f64().unwrap();
+        assert!((volume - want).abs() < want * EXACT, "{operation}: got {volume}, expected {want}");
+    }
+}
+
+#[test]
+fn revolve_of_two_regions_stops_each_on_the_plane() {
+    use solidcraft_geom::{PlaneGeom, Vec3Geom};
+
+    let mut s = Session::default();
+    run(&mut s, "sketch.create", json!({"plane": "XZ", "name": "R"}));
+    run(&mut s, "sketch.rectangle.two_point", json!({"p0": [5, 0], "p1": [8, 1]}));
+    run(&mut s, "sketch.rectangle.two_point", json!({"p0": [5, 3], "p1": [8, 4]}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "solid.revolve", json!({"sketch": "R", "axis": "Z", "operation": "new", "to": "YZ"}));
+    let state = s.model.state();
+    assert_eq!(state.bodies.len(), 2, "two regions");
+    // Each band is 1 tall: (π/4) · (8² − 5²) · 1 = 39·π/4.
+    let want = 39.0 * PI / 4.0;
+    let x = solidcore_record::Vec3::X;
+    for mb in &state.bodies {
+        let swept = &mb.body;
+        assert!(
+            (0..swept.face_count())
+                .any(|i| swept.planar_face(i).is_some_and(|p| p.normal().dot(x).abs() > 1.0 - EXACT && p.origin.dot(x).abs() < EXACT)),
+            "{}: missing the end face on x = 0",
+            mb.name
+        );
+        let volume = solidcraft_kernel::measure(swept).unwrap().volume;
+        assert!((volume - want).abs() < want * EXACT, "{}: got {volume}, expected {want}", mb.name);
+    }
+}
+
+#[test]
+fn revolve_about_a_sketch_line_to_an_axis_point_plane_keeps_volume() {
+    // Quarter turn of the band r = 1..3, length 5: (π/4) · (3² − 1²) · 5 = 10·π, for every axis pose.
+    let want = 10.0 * PI;
+    let mut worst = 0.0;
+    let mut worst_got = 0.0;
+    let mut worst_at = (0.0, 0.0);
+    for alpha_deg in [30.0, 37.0, 53.13, 61.3] {
+        let alpha = alpha_deg * PI / 180.0;
+        let (cos_a, sin_a) = (alpha.cos(), alpha.sin());
+        let d = (cos_a, sin_a, 0.0);
+        let n = (sin_a, -cos_a, 0.0);
+        for i in 0..15 {
+            let t = i as f64 * 1000.0 / 14.0;
+            let origin = (t * -sin_a, t * cos_a, 0.0);
+            let point = [origin.0 + n.0, origin.1 + n.1, 0.0];
+            let mut s = Session::default();
+            run(
+                &mut s,
+                "sketch.create",
+                json!({"plane": {"origin": [origin.0, origin.1, 0.0], "x_dir": [d.0, d.1, d.2], "y_dir": [0.0, 0.0, 1.0]}, "name": "S"}),
+            );
+            run(&mut s, "sketch.line", json!({"points": [[0, 0], [20, 0]], "ids": ["Axis"], "construction": true}));
+            run(&mut s, "sketch.rectangle.two_point", json!({"p0": [0, 1], "p1": [5, 3]}));
+            run(&mut s, "sketch.finish", json!({}));
+            run(&mut s, "construct.plane.axis_point", json!({"axis": {"sketch": "S", "curve": "Axis"}, "point": {"point": point}, "name": "Stop"}));
+            s.execute("solid.revolve", &json!({"sketch": "S", "axis": "Axis", "operation": "new", "to": "Stop", "body_name": "B"}))
+                .unwrap_or_else(|e| panic!("α={alpha_deg} t={t}: {e}"));
+            let got = body(&mut s, "B")["volume_mm3"].as_f64().unwrap();
+            let rel = (got - want).abs() / want;
+            if rel > worst {
+                worst = rel;
+                worst_got = got;
+                worst_at = (alpha_deg, t);
+            }
+        }
+    }
+    assert!(worst < EXACT, "worst |got-want|/want {worst} at (α={}, t={}): got {worst_got}, expected {want}", worst_at.0, worst_at.1);
+}
+
+#[test]
+fn revolve_to_a_forty_five_degree_plane_survives_reload_undo_and_redo() {
+    use solidcore_record::Vec3;
+    use std::f64::consts::FRAC_1_SQRT_2;
+
+    let mut s = Session::default();
+    run(&mut s, "construct.plane.at_angle", json!({"base": "XZ", "axis": "Z", "angle": "45 deg", "name": "Diagonal"}));
+    revolve_stop_profile(&mut s);
+    run(&mut s, "solid.revolve", revolve_stop_params(json!("Diagonal")));
+    // +45° is first crossed at π/4: V = 19.5·π.
+    let want = 19.5 * PI;
+    let normal = Vec3::new(-FRAC_1_SQRT_2, FRAC_1_SQRT_2, 0.0);
+    check_revolve_stop(&s, "after creation", normal, 0.0, want);
+    let doc = solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap();
+    check_revolve_stop(&Session::new(doc), "after reopening", normal, 0.0, want);
+    run(&mut s, "edit.undo", json!({}));
+    assert!(s.model.state().body("B").is_none(), "undo kept B");
+    run(&mut s, "edit.redo", json!({}));
+    check_revolve_stop(&s, "after redo", normal, 0.0, want);
+}
+
+#[test]
+fn hostile_revolve_stops_are_refused() {
+    let mut built = Session::default();
+    fence_beside_profile(&mut built);
+    let before = built.doc.to_json();
+    for to in [json!({"face": [1e300, 0.0, 0.0]}), json!({"face": [500.0, 500.0, 500.0]}), json!("NoSuchPlane")] {
+        let mut s = Session::new(solidcraft_doc::Document::from_json(&before).unwrap());
+        let loaded = s.doc.to_json();
+        let error = s.execute("solid.revolve", &revolve_stop_params(to.clone())).unwrap_err();
+        assert_eq!(s.doc.to_json(), loaded, "{to} changed the design: {error}");
+        assert_eq!(loaded, before, "{to}: reloaded design drifted");
+    }
 }
 
 /// To Object picks the face that is at the picked point, not the first body with any face

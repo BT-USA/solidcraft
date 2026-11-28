@@ -274,6 +274,7 @@ pub use bridge::frames;
 pub use bridge::frames_across;
 pub use bridge::sample_grid;
 pub use bridge::tangent_face_chain_of_faces;
+pub use build::BUILD_PARAMETER_LIMIT;
 pub use build::PathSeg;
 pub use build::canonical_revolve_axis;
 pub use build::level_on_plane;
@@ -283,6 +284,7 @@ pub use build::planar_face_record;
 pub use build::plane_gap;
 pub use build::plane_raised;
 pub use build::plane_rise;
+pub use build::revolve_radial;
 pub use build::slab_sides;
 pub use build::symmetric_offset_intervals;
 pub use build::symmetric_offset_probe_points;
@@ -577,6 +579,7 @@ pub use splitface::SplitTool;
 pub use splitface::face_split_extended;
 pub use splitface::face_split_if_on_face;
 pub use splitface::has_cap_at;
+pub use splitface::has_sweep_end_cap_at;
 pub use splitface::split_at_facing_side;
 pub use splitface::{FieldKind, PieceSides, split_piece_sides};
 pub use step::step_export;
@@ -726,6 +729,10 @@ pub enum KernelError {
     /// A stored B-rep number failed the coordinate ceiling check.
     #[error("invalid input: {cause}", cause = solidcore_record::brep::Invalid(BREP_COORDINATE_CEILING))]
     CoordinateCeiling,
+    /// The half-space tool would exceed the extrusion builder's allowed reach: the plane is too
+    /// far from the body. Callers word it for their command and the design's unit.
+    #[error("the plane is out of range")]
+    HalfSpaceOutOfRange,
     #[error("the operation failed: {0}")]
     Failed(String),
     /// A blend or other size too large for the geometry around it (a smaller size may work);

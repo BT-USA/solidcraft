@@ -394,14 +394,21 @@ pub fn half_space(body: &Body, plane: &solidcore_record::Plane, positive: bool) 
 pub(crate) fn half_box(body: &Body, plane: &solidcore_record::Plane, positive: bool) -> Result<Body> {
     body.require_brep("split")?;
     let bb = body.exact_bounds()?;
-    let reach = (bb.diagonal() + plane.origin.dist(bb.center())) * 2.0 + body.size();
     let c = plane.to_local(bb.center());
+    // In the plane the square only has to cover the body around its own centre; along the normal
+    // the box has to reach past the body's farthest point. Neither depends on where the plane's
+    // origin sits, so a body far from the origin is not refused for that.
+    let side = bb.diagonal() * 2.0;
+    let reach = (bb.diagonal() + plane.height(bb.center()).abs()) * 2.0;
+    if ![c.x.abs() + side, c.y.abs() + side, reach].iter().all(|&x| crate::build::build_parameter_in_range(x)) {
+        return Err(KernelError::HalfSpaceOutOfRange);
+    }
     let sq = solidcore_record::Region2 {
         outer: solidcore_record::Loop2::polygon(&[
-            solidcore_record::Vec2::new(c.x - reach, c.y - reach),
-            solidcore_record::Vec2::new(c.x + reach, c.y - reach),
-            solidcore_record::Vec2::new(c.x + reach, c.y + reach),
-            solidcore_record::Vec2::new(c.x - reach, c.y + reach),
+            solidcore_record::Vec2::new(c.x - side, c.y - side),
+            solidcore_record::Vec2::new(c.x + side, c.y - side),
+            solidcore_record::Vec2::new(c.x + side, c.y + side),
+            solidcore_record::Vec2::new(c.x - side, c.y + side),
         ]),
         holes: vec![],
     };
