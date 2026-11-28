@@ -391,7 +391,7 @@ fn clip(
             lo + (hi - lo) * (i as f64) / (SAMPLES as f64)
         }
     };
-    let mut values = Vec::with_capacity(SAMPLES + 1);
+    let mut values = Vec::new();
     for i in 0..=SAMPLES {
         values.push(height(at(i))?);
     }
