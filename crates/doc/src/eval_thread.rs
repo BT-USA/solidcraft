@@ -285,9 +285,10 @@ pub(super) fn thread_on_in(st: &ModelState, feature: u64, component: Option<u64>
     // A bore that a cut across it split (a cross hole) is one cylinder in pieces: a Thread runs
     // along all of them, as it does when it was made before the cut (#23507), and a pick on any
     // piece is the same thread. A tapped hole lists its wall's pieces itself (#13505).
-    let cyl = match (ask.tapped, pieces_span(&mb.body, &cyl)) {
-        (false, Some((start, end))) => kernel::CylinderFace { start, end, ..cyl },
-        _ => cyl,
+    let joined = if ask.tapped { None } else { pieces_span(&mb.body, &cyl) };
+    let cyl = match joined {
+        Some((start, end)) => kernel::CylinderFace { start, end, ..cyl },
+        None => cyl,
     };
     let dia = cyl.radius * 2.0;
     let form = match (ask.form, ask.designation.and_then(ThreadForm::of_designation)) {
