@@ -6269,16 +6269,30 @@ fn both_flat_face_loops_of_a_notched_half_torus_round() {
 /// The volume a round of radius `r` (`chamfer: false`) or a chamfer of distance `r` takes off
 /// one rim of the upper half of a torus (ring radius `a`, tube radius `b`) cut by the plane
 /// through its axis' middle: the outer rim for `side` 1, the inner for -1. The blend is the
-/// revolved meridian blend of the tube's circle and the cut line, which meet square. Both are
-/// fixed by where the circle's and the line's offsets by `r` meet, the centre (x, r) with
-/// |x - a| = sqrt((b - r)^2 - r^2): the round is the circle about it, and the chamfer joins its
-/// feet, (x, 0) on the line and the point of the tube's circle along the centre's direction from
-/// the tube's centre. By Pappus, the volume is 2 pi times the first moment about the axis of the
-/// region between the blend and the corner, integrated over z (the substitution
-/// z = h (1 - cos t) / 2 takes the square roots' ends smoothly).
+/// revolved meridian blend of the tube's circle and the cut line, which meet square.
+///
+/// The round is fixed by where the circle's and the line's offsets by `r` meet, the centre
+/// (x, r) with |x - a| = sqrt((b - r)^2 - r^2): the circle about it.
+///
+/// The chamfer's distance is measured along each face (#1023): `r` along the line from the
+/// rim, to `(rim - side r, 0)`, and `r` of arc round the tube's circle, a turn of `r / b`, to
+/// `(a + side b cos(r / b), b sin(r / b))`. The chamfer joins the two feet, a straight line
+/// in the meridian.
+///
+/// By Pappus, the volume is 2 pi times the first moment about the axis of the region between
+/// the blend and the corner, integrated over z (the substitution z = h (1 - cos t) / 2 takes
+/// the square roots' ends smoothly).
 fn half_torus_rim_blend_takes(a: f64, b: f64, r: f64, side: f64, chamfer: bool) -> f64 {
     let x = a + side * ((b - r).powi(2) - r * r).sqrt();
-    let foot = [a + (x - a) * b / (b - r), r * b / (b - r)];
+    let turn = r / b;
+    let (start, foot) = if chamfer {
+        (
+            a + side * b - side * r,
+            [a + side * b * turn.cos(), b * turn.sin()],
+        )
+    } else {
+        (x, [a + (x - a) * b / (b - r), r * b / (b - r)])
+    };
     let n = 20_000;
     let mut moment = 0.0;
     for i in 0..n {
@@ -6287,7 +6301,7 @@ fn half_torus_rim_blend_takes(a: f64, b: f64, r: f64, side: f64, chamfer: bool) 
         let dz = foot[1] * t.sin() / 2.0 * PI / f64::from(n);
         let tube = a + side * (b * b - z * z).sqrt();
         let blend = if chamfer {
-            x + (foot[0] - x) * z / foot[1]
+            start + (foot[0] - start) * z / foot[1]
         } else {
             x + side * (r * r - (z - r).powi(2)).max(0.0).sqrt()
         };
@@ -8200,6 +8214,26 @@ fn capsule_section(plane: f64, round: f64, ball: bool) -> (f64, f64) {
     (area, moment)
 }
 
+/// [`capsule_section`] for a chamfer whose distances are measured along the faces (#1023):
+/// `on_plane` along the cut face from the edge (5, 0), to the foot (`5 - on_plane`, 0), and
+/// `on_arc` of arc round the circle of radius 5, a turn `th = on_arc / 5`, to the foot
+/// 5 (cos th, sin th). The chamfer takes the triangle of the edge and the two feet, with the
+/// circle's segment between angles 0 and `th`: its area, and its first moment about x = 0.
+fn capsule_chamfer_section(on_plane: f64, on_arc: f64) -> (f64, f64) {
+    let r = 5.0_f64;
+    let th = on_arc / r;
+    let t = th;
+    let sa = 0.5 * r * r * (t - t.sin());
+    let d = 4.0 * r * (0.5 * t).sin().powi(3) / (3.0 * (t - t.sin()));
+    let sx = d * (0.5 * th).cos();
+    let foot = (r * th.cos(), r * th.sin());
+    let triangle = 0.5 * on_plane * foot.1;
+    (
+        triangle + sa,
+        triangle * (r + (r - on_plane) + foot.0) / 3.0 + sa * sx,
+    )
+}
+
 /// The half capsule's volume: half the cylinder and half of each of two hemispheres.
 const HALF_CAPSULE: f64 = 0.5 * PI * 25.0 * 10.0 + 2.0 * PI * 125.0 / 3.0;
 
@@ -8211,10 +8245,9 @@ const HALF_CAPSULE: f64 = 0.5 * PI * 25.0 * 10.0 + 2.0 * PI * 125.0 / 3.0;
 /// arc that holds the pole bounds no cosine however often it is halved: the bound was a half
 /// turn, and a chamfer at a wedge of pi has no definition. A sphere's normal is now enclosed
 /// by its definition, `S - c`, and every arc is bounded at a right angle. At that wedge the
-/// offsets are the setbacks swapped (`ChamferDefinition::offsets`): the cut face is offset by
-/// the second size and the curved faces by the first. The chamfer takes off the section of
-/// [`capsule_section`] along the two lines (10 each) and, by Pappus, turned through pi about
-/// each sphere's centre.
+/// size is the setback along the cut face and the second is arc length round the curved faces
+/// (#1023). The chamfer takes off the section of [`capsule_chamfer_section`] along the two
+/// lines (10 each) and, by Pappus, turned through pi about each sphere's centre.
 #[test]
 fn an_unequal_chamfer_of_a_half_capsule_s_outline_is_measured_at_a_right_angle() {
     use solidcore::blend::chamfer_side::widest_wedge_bound;
@@ -8255,7 +8288,7 @@ fn an_unequal_chamfer_of_a_half_capsule_s_outline_is_measured_at_a_right_angle()
             b.check(CheckLevel::All).unwrap().is_valid(),
             "{flat}/{round}"
         );
-        let (area, moment) = capsule_section(round, flat, false);
+        let (area, moment) = capsule_chamfer_section(flat, round);
         let want = HALF_CAPSULE - 20.0 * area - 2.0 * PI * moment;
         assert!(
             rel(volume(&b), want) < 1e-9,
@@ -8483,7 +8516,8 @@ fn a_full_round_whose_rails_meet_along_part_of_one_of_them() {
 /// the pole, where the longitude is undetermined, and found none. The step is now taken in
 /// 3D. Each end is the section in the plane through the pole square to the edge, so the blend
 /// takes off [`capsule_section`] along the line (10) and, by Pappus, turned through pi/2 about
-/// each sphere's centre. An equal chamfer of 1 has offsets 1 at a right angle.
+/// each sphere's centre. An equal chamfer of 1 is 1 along the cut face and 1 of arc round the
+/// circle ([`capsule_chamfer_section`], #1023).
 #[test]
 fn a_chamfer_or_round_of_a_half_capsule_s_outline_from_pole_to_pole_builds() {
     all_fixes();
@@ -8500,7 +8534,11 @@ fn a_chamfer_or_round_of_a_half_capsule_s_outline_from_pole_to_pole_builds() {
         let kind = if ball { Blend::Round } else { Blend::Chamfer };
         blend(&b, kind, &edges, &[1.0], &[], Corners::Filled).unwrap();
         assert!(b.check(CheckLevel::All).unwrap().is_valid(), "{kind:?}");
-        let (area, moment) = capsule_section(1.0, 1.0, ball);
+        let (area, moment) = if ball {
+            capsule_section(1.0, 1.0, true)
+        } else {
+            capsule_chamfer_section(1.0, 1.0)
+        };
         let want = HALF_CAPSULE - 10.0 * area - PI * moment;
         assert!(
             rel(volume(&b), want) < 1e-9,

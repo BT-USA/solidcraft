@@ -16,6 +16,7 @@
 
 use super::{FilletBody, FilletObject, FilletSession, FilletSurfaceGenerator};
 use crate::blend::blend_refusal::{chains_among, setback_below_resolution, BlendRefusal};
+use crate::blend::chamfer_section;
 use crate::blend::chamfer_side::widest_wedge_bound;
 use crate::blend::fillet_executive::p2::FilletParametersAccess;
 use crate::blend::fillet_solver::p5::is_knife_edge;
@@ -127,6 +128,41 @@ fn refused_size(id: EdgeId, size: ChamferSize, wedge: f64) -> SolidError {
         }
         _ => size_invalid(id),
     }
+}
+
+/// How far each face of edges uses `u0`, `u1` bends towards the other face in the section square
+/// to the edge at parameter `t` (1/length, [`crate::blend::chamfer_section`]): its normal
+/// curvature along the direction into the face, signed towards the other face. `None` where a
+/// face has no curvature there (a pole), which leaves the section straight.
+fn section_bends(
+    k: &Kernel,
+    b: &mut crate::Brep,
+    u0: EdgeuseId,
+    u1: EdgeuseId,
+    t: f64,
+) -> Result<Option<[f64; 2]>> {
+    let o = BinormalOptions::default();
+    let e0 = evaluate_binormal(k, b, u0, t, false, &o)?;
+    let e1 = evaluate_binormal(k, b, u1, t, false, &o)?;
+    let mut bends = [0.0; 2];
+    for (slot, (e, other, u)) in bends.iter_mut().zip([(&e0, &e1, u0), (&e1, &e0, u1)]) {
+        let face = eu1::face(b, u)?.ok_or_else(|| {
+            SolidError::invalid_input(
+                "blend::fillet_executive::session::section_bends",
+                "an edge use bounds no face",
+            )
+        })?;
+        let Some(p) = crate::query::continuity::principal_curvatures(k, b, face, e.point)? else {
+            return Ok(None);
+        };
+        let along = e.binormal.unitize()?;
+        // towards the other face: the part of its direction square to this one
+        let toward = (other.binormal - along * other.binormal.dot(along)).unitize()?;
+        let (c1, c2) = (along.dot(p.d1), along.dot(p.d2));
+        let convex = p.k1 * c1 * c1 + p.k2 * c2 * c2;
+        *slot = -convex * p.normal.dot(toward);
+    }
+    Ok(Some(bends))
 }
 
 /// Whether edge use `u` bounds a face on a plane.
@@ -654,6 +690,55 @@ impl FilletSession<'_> {
                     })?
             } else {
                 asked
+            };
+            let chamfer = {
+                // a face that bends in the section: the sizes are measured along its curve
+                // (#1023), not on the straight section the planar offsets read
+                let own = wedges.get(index).copied().unwrap_or(f64::NAN);
+                let interval = self.objects.target.edge(id)?.interval;
+                let target: &mut crate::Brep = &mut *self.objects.target;
+                // the same section all along the edge (a circle between surfaces of revolution
+                // is): then the sizes hold at every station. Where the wedge or a face's bend
+                // runs (an edge that ends tangent, a spline's), no one pair of offsets keeps the
+                // arc lengths, and the sizes are read at the measured wedge as before.
+                let mut bends: Option<[f64; 2]> = None;
+                if (own - wedge).abs() <= 1e-5 {
+                    let mut all = true;
+                    for at in [0.5, 0.1, 0.3, 0.7, 0.9] {
+                        let t = interval.evaluate(at);
+                        let here = section_bends(k, target, u0, u1, t)?;
+                        let w = wedge_at(k, target, u0, u1, t)?;
+                        match (here, bends) {
+                            (Some(h), None) if all && at == 0.5 => bends = Some(h),
+                            (Some(h), Some(b))
+                                if (w - own).abs() <= 1e-5
+                                    && h.iter()
+                                        .zip(b)
+                                        .all(|(x, y)| (x - y).abs() <= 1e-5 * (1.0 + y.abs())) => {}
+                            _ => {
+                                all = false;
+                                break;
+                            }
+                        }
+                    }
+                    if !all {
+                        bends = None;
+                    }
+                }
+                match bends {
+                    Some(bends) if bends.iter().any(|x| x.abs() > chamfer_section::STRAIGHT) => {
+                        let bends = if on_second {
+                            [bends[1], bends[0]]
+                        } else {
+                            bends
+                        };
+                        let r = chamfer_section::offsets(wedge, bends, size)
+                            .map_err(|_| refused_size(id, size, wedge))?;
+                        let r = if on_second { [r[1], r[0]] } else { r };
+                        ChamferDefinition::of_offsets(r, wedge)?
+                    }
+                    _ => chamfer,
+                }
             };
             let [r1, r2] = chamfer.offsets().map_err(|_| size_invalid(id))?;
             first.push(r1);

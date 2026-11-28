@@ -1,8 +1,9 @@
 //! The reported revolved vase chamfer (solidcore#2905), captured before its operation.
 //!
 //! The meridian's circle has centre (-16,33), radius sqrt(1690), between z=30 and
-//! z=60. The upper line is r=15+0.15*(z-60). Equal setbacks 2.995 determine the
-//! ball offsets; the chamfer joins the two contact points by a straight segment.
+//! z=60. The upper line is r=15+0.15*(z-60). Equal setbacks 2.995, along the line and as
+//! arc on the circle, give the contact points (#1023); the chamfer joins them by a straight
+//! segment.
 //! Its revolution is a cone. Volume below is an independent meridian integral.
 #![allow(
     clippy::unwrap_used,
@@ -67,25 +68,17 @@ fn base_volume() -> f64 {
 }
 
 fn chamfer_contacts() -> [[f64; 2]; 2] {
-    // Independently solve the offset circle/cone meridians, selecting the contact
-    // on both finite faces. Neither a kernel result nor the old cached volume.
+    // The setbacks are measured along each face (#1023): 2.995 of arc on the circle and 2.995
+    // along the line, from their corner (15, 60) (the circle at z = 60: -16 + sqrt(1690 - 27^2)).
+    // Neither a kernel result nor the old cached volume.
     let d = 2.995;
     let rho = 1690.0_f64.sqrt();
-    let alpha =
-        ((27.0 / rho) * (0.15 / 1.0225_f64.sqrt()) - (31.0 / rho) / 1.0225_f64.sqrt()).acos();
-    let r = d * (1.0 - alpha.cos()) / alpha.sin();
+    // the corner is at angle atan2(27, 31) about the centre (-16, 33); the arc runs down from it
+    let theta = 27.0_f64.atan2(31.0) - d / rho;
+    let (ra, za) = (-16.0 + rho * theta.cos(), 33.0 + rho * theta.sin());
+    // the line r = 15 + 0.15 (z - 60) runs up from the corner, along (0.15, 1) / sqrt(1.0225)
     let n = 1.0225_f64.sqrt();
-    // Offset upper line: x - 0.15*z = 6 + r*sqrt(1.0225).
-    let c = 6.0 + r * n;
-    let aa = 1.0225;
-    let bb = 0.3 * (c + 16.0) - 66.0;
-    let cc = (c + 16.0) * (c + 16.0) + 1089.0 - (rho + r) * (rho + r);
-    let z = (-bb + (bb * bb - 4.0 * aa * cc).sqrt()) / (2.0 * aa);
-    let x = c + 0.15 * z;
-    let ra = -16.0 + (x + 16.0) * rho / (rho + r);
-    let za = 33.0 + (z - 33.0) * rho / (rho + r);
-    let rb = x - r / n;
-    let zb = z + 0.15 * r / n;
+    let (rb, zb) = (15.0 + 0.15 * d / n, 60.0 + d / n);
     [[ra, za], [rb, zb]]
 }
 

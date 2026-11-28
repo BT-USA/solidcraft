@@ -1927,31 +1927,46 @@ mod tests {
     /// The pick on the boss's concave base edge of [`boss_on_rounded_plate`].
     const BOSS_EDGE: Vec3 = Vec3::new(26.796894836538296, -10.5, -12.0);
 
-    /// The chamfer `d` of the boss's base edge on the rounded plate, as solidcore defines it from
-    /// the wedge at the edge (angle `a`): offset `r = d (1 - cos a) / sin a` from the plate's front
-    /// face (the plane y = -10.5) and from the boss's cylinder. Its contact on the plane `p` and
-    /// on the boss's circle `q` (in xy: the feet of the point that far from both), and the area
-    /// of its section between the plane, the chamfer's line from `p` to `q` and the circle.
+    /// The chamfer `d` of the boss's base edge on the rounded plate, measured along each face
+    /// (#1023): `d` along the plate's front face (the plane y = -10.5) and `d` of arc round the
+    /// boss's circle. Its contact on the plane `p` and on the boss's circle `q` (in xy), and the
+    /// area of its section between the plane, the chamfer's line from `p` to `q` and the circle.
     fn boss_chamfer_section(d: f64) -> ((f64, f64), (f64, f64), f64) {
         boss_chamfer_sides_section(d, d)
     }
 
     /// [`boss_chamfer_section`] of the two-distance chamfer `plate` along the plate's front face
-    /// and `boss` along the boss's cylinder: solidcore keeps the offsets these are at the edge's
-    /// wedge, `(boss - plate cos a) / sin a` from the plate's face and `(plate - boss cos a) /
-    /// sin a` from the boss's cylinder, and the contacts are the feet of the point that far from
-    /// each.
+    /// and `boss` of arc along the boss's circle: the foot on the plane is `plate` from the edge
+    /// along it, the foot on the circle a turn of `boss / radius` from the edge.
     fn boss_chamfer_sides_section(plate: f64, boss: f64) -> ((f64, f64), (f64, f64), f64) {
+        boss_section_by_turn(plate, boss / 12.90348790056394)
+    }
+
+    /// The section of the chamfer with `plate` along the plane and the circle's foot a `turn` (radians) from the edge.
+    fn boss_section_by_turn(plate: f64, turn: f64) -> ((f64, f64), (f64, f64), f64) {
         let (cx, cy, big, yp): (f64, f64, f64, f64) = (14.388009991673611, -14.038301415494109, 12.90348790056394, -10.5);
         let ex = cx + (big * big - (yp - cy).powi(2)).sqrt();
-        let (cos, sin) = ((yp - cy) / big, (ex - cx) / big);
-        let (rp, rb) = ((boss - plate * cos) / sin, (plate - boss * cos) / sin);
-        let (ox, oy) = (((big + rb).powi(2) - (yp - rp - cy).powi(2)).sqrt(), yp - rp - cy);
-        let p = (cx + ox, yp);
-        let q = (cx + ox * big / (big + rb), cy + oy * big / (big + rb));
+        let from = (yp - cy).atan2(ex - cx);
+        let p = (ex + plate, yp);
+        let q = (cx + big * (from - turn).cos(), cy + big * (from - turn).sin());
         let triangle = 0.5 * ((p.0 - ex) * (q.1 - yp) - (q.0 - ex) * (p.1 - yp)).abs();
-        let turn = (yp - cy).atan2(ex - cx) - (q.1 - cy).atan2(q.0 - cx);
         (p, q, triangle - 0.5 * big * big * (turn - turn.sin()))
+    }
+
+    /// The chamfer `plate` along the plane with its line at `angle` to the plane: the line leaves
+    /// the plane's foot back towards the edge and meets the boss's circle where [`boss_section_by_turn`]'s
+    /// turn says (#1023).
+    fn boss_chamfer_angle_section(plate: f64, angle: f64) -> ((f64, f64), (f64, f64), f64) {
+        let (cx, cy, big, yp): (f64, f64, f64, f64) = (14.388009991673611, -14.038301415494109, 12.90348790056394, -10.5);
+        let ex = cx + (big * big - (yp - cy).powi(2)).sqrt();
+        let from = (yp - cy).atan2(ex - cx);
+        let (px, py) = (ex + plate - cx, yp - cy);
+        let (ux, uy) = (-angle.cos(), -angle.sin());
+        // |(px, py) + l (ux, uy)|^2 = big^2, the nearer root
+        let half = px * ux + py * uy;
+        let l = -half - (half * half - (px * px + py * py - big * big)).sqrt();
+        let (hx, hy) = (px + l * ux, py + l * uy);
+        boss_section_by_turn(plate, from - hy.atan2(hx))
     }
 
     /// z of the r16 corner's arc on the plate's front face at x (x >= 32.5): it lies on
@@ -1960,8 +1975,8 @@ mod tests {
         -16.0 + (256.0 - (x - 32.5).powi(2)).sqrt()
     }
 
-    /// The boss's base edge chamfered 8: its contact line on the plate's front face runs past
-    /// x 32.5, where the face's top edge turns into the r16 corner's arc, and SMLib refuses it.
+    /// The boss's base edge chamfered 5.75, measured along each face (#1023): its contact line on
+    /// the plate's front face (5.75 from the edge at x 26.797, so at x 32.547) runs past x 32.5, where the face's top edge turns into the r16 corner's arc, and SMLib refuses it.
     /// Carried on, the chamfer's contact line on the plate ends on the arc, its top edge meets
     /// the corner at x 32.5, and its material is its section over the boss's 24 mm less the
     /// sliver past the arc (under 0.01 mm³ here). One shell.
@@ -1969,10 +1984,10 @@ mod tests {
     fn a_concave_chamfer_runs_on_past_where_its_face_turns_into_a_round() {
         let body = boss_on_rounded_plate();
         let before = crate::measure(&body).unwrap().volume;
-        assert!(matches!(chamfer(&body, &[BOSS_EDGE], 8.0), Err(KernelError::TooLarge(_))));
-        let out = chamfer_carrying_face(&body, &[BOSS_EDGE], 8.0).unwrap();
+        assert!(matches!(chamfer(&body, &[BOSS_EDGE], 5.75), Err(KernelError::TooLarge(_))));
+        let out = chamfer_carrying_face(&body, &[BOSS_EDGE], 5.75).unwrap();
         let m = crate::measure(&out).unwrap();
-        let (p, q, area) = boss_chamfer_section(8.0);
+        let (p, q, area) = boss_chamfer_section(5.75);
         let short = 24.0 * area - (m.volume - before);
         assert!(m.shells == 1 && (0.0..0.01).contains(&short), "short of the full section by {short}");
         let top = p.1 + (32.5 - p.0) * (q.1 - p.1) / (q.0 - p.0);
@@ -1981,15 +1996,15 @@ mod tests {
         }
     }
 
-    /// Chamfered 7 the contact line stays on the plate's face (x 32.4906 < 32.5) and SMLib builds
+    /// Chamfered 5.69 the contact line stays on the plate's face (x 32.487 < 32.5) and SMLib builds
     /// it: carrying the face on does not run and the body is SMLib's, its material the section.
     #[test]
     fn a_concave_chamfer_that_fits_its_face_is_smlibs() {
         let body = boss_on_rounded_plate();
-        let plain = chamfer(&body, &[BOSS_EDGE], 7.0).unwrap();
-        let out = chamfer_carrying_face(&body, &[BOSS_EDGE], 7.0).unwrap();
+        let plain = chamfer(&body, &[BOSS_EDGE], 5.69).unwrap();
+        let out = chamfer_carrying_face(&body, &[BOSS_EDGE], 5.69).unwrap();
         assert_eq!(crate::encode_native_body(&out).unwrap(), crate::encode_native_body(&plain).unwrap());
-        let (_, _, area) = boss_chamfer_section(7.0);
+        let (_, _, area) = boss_chamfer_section(5.69);
         let added = crate::measure(&out).unwrap().volume - crate::measure(&body).unwrap().volume;
         assert!((24.0 * area - added).abs() < 1e-3, "{added}");
     }
@@ -2014,15 +2029,15 @@ mod tests {
         }
     }
 
-    /// Just past the largest chamfer that fits (7.00), SMLib fails it as an operation instead of
+    /// Just past the largest chamfer that fits (5.70, the plate's face ending 5.7031 from the edge), SMLib fails it as an operation instead of
     /// sizing it; carried on it builds, and the chamfer grows with its distance through there.
     #[test]
     fn a_concave_chamfer_just_past_its_face_builds() {
         let body = boss_on_rounded_plate();
-        assert!(matches!(chamfer(&body, &[BOSS_EDGE], 7.02), Err(KernelError::Failed(_))));
+        assert!(matches!(chamfer(&body, &[BOSS_EDGE], 5.72), Err(KernelError::Failed(_))));
         let before = crate::measure(&body).unwrap().volume;
         let mut last = before;
-        for d in [7.0, 7.01, 7.02, 7.05, 7.1, 8.0] {
+        for d in [5.69, 5.7, 5.71, 5.72, 5.75, 5.8] {
             let out = chamfer_carrying_face(&body, &[BOSS_EDGE], d).unwrap_or_else(|e| panic!("{d}: {e}"));
             let v = crate::measure(&out).unwrap().volume;
             let (_, _, area) = boss_chamfer_section(d);
@@ -2434,7 +2449,7 @@ mod tests {
         let body = boss_on_rounded_plate();
         let before = crate::measure(&body).unwrap().volume;
         let bytes = |b: &Body| crate::encode_native_body(b).unwrap();
-        for (d1, side) in [(3.0, ChamferSide::Distance(5.0)), (5.0, ChamferSide::Distance(3.0)), (5.0, ChamferSide::Angle(60f64.to_radians()))] {
+        for (d1, side) in [(3.0, ChamferSide::Distance(5.0)), (5.0, ChamferSide::Distance(3.0)), (5.0, ChamferSide::Angle(30f64.to_radians()))] {
             let unflipped = bytes(&chamfer_sides(&body, &[BOSS_EDGE], d1, side, false).unwrap());
             for flip in [false, true] {
                 let plain = chamfer_sides(&body, &[BOSS_EDGE], d1, side, flip).unwrap();
@@ -2537,22 +2552,22 @@ mod tests {
         assert_eq!(across_x, 4, "two of the four edges, for either flip");
     }
 
-    /// With 5 along the boss, 6.38 along the plate is the largest that fits the plate's face (its
-    /// contact at x 32.4994) and is SMLib's body; 6.4 SMLib fails as an operation and 6.45 it
-    /// refuses as too large. Carried on they build, and the chamfer grows with its first distance
+    /// With 5 of arc round the boss, 5.70 along the plate is the largest that fits the plate's face
+    /// (its contact at x 32.497, the face ending 5.7031 from the edge) and is SMLib's body; 5.72
+    /// SMLib fails as an operation and 5.75 it refuses as too large. Carried on they build, and the chamfer grows with its first distance
     /// through there, its material the section less the part past the arc.
     #[test]
     fn a_two_distance_chamfer_just_past_its_face_builds() {
         let body = boss_on_rounded_plate();
         let side = ChamferSide::Distance(5.0);
         let plain = |d: f64| chamfer_sides(&body, &[BOSS_EDGE], d, side, false);
-        assert!(matches!(plain(6.4), Err(KernelError::Failed(_))));
-        assert!(matches!(plain(6.45), Err(KernelError::TooLarge(_))));
-        let fits = chamfer_sides_carrying_face(&body, &[BOSS_EDGE], 6.38, side, false).unwrap();
-        assert_eq!(crate::encode_native_body(&fits).unwrap(), crate::encode_native_body(&plain(6.38).unwrap()).unwrap());
+        assert!(matches!(plain(5.72), Err(KernelError::Failed(_))));
+        assert!(matches!(plain(5.75), Err(KernelError::TooLarge(_))));
+        let fits = chamfer_sides_carrying_face(&body, &[BOSS_EDGE], 5.7, side, false).unwrap();
+        assert_eq!(crate::encode_native_body(&fits).unwrap(), crate::encode_native_body(&plain(5.7).unwrap()).unwrap());
         let before = crate::measure(&body).unwrap().volume;
         let mut last = before;
-        for d in [6.38, 6.39, 6.4, 6.42, 6.45, 6.6, 8.0] {
+        for d in [5.7, 5.71, 5.72, 5.74, 5.75, 5.8, 6.0] {
             let out = chamfer_sides_carrying_face(&body, &[BOSS_EDGE], d, side, false).unwrap_or_else(|e| panic!("{d}: {e}"));
             let m = crate::measure(&out).unwrap();
             let (p, q, area) = boss_chamfer_sides_section(d, 5.0);
@@ -2563,10 +2578,10 @@ mod tests {
     }
 
     /// A two-distance chamfer whose contact on the boss lies behind the line of the edge stands
-    /// over the boss there and is whole: 10 and 12, 11 and 13, 12 and 15 (plate and boss) run
+    /// over the boss there and is whole: 10 and 12, 11 and 13, 12 and 14 (plate and arc round the boss) run
     /// past the plate's face, and carried on each is its section over the boss's 24 mm less the
     /// part past the corner's arc, its contact line on the boss runs the boss's height, and it
-    /// is one face. 9 and 12 fits the plate's face and stands over the boss too: SMLib builds
+    /// is one face. 5.5 and 12 fits the plate's face and stands over the boss too: SMLib builds
     /// it, as whole, and 10 and 12 is more.
     #[test]
     fn a_two_distance_chamfer_is_whole_where_it_stands_over_the_boss() {
@@ -2586,9 +2601,9 @@ mod tests {
             assert_eq!(faces_from_edge(&out, &body, BOSS_EDGE), 1, "{d1} and {d2}");
             added
         };
-        assert!(chamfer_sides(&body, &[BOSS_EDGE], 9.0, ChamferSide::Distance(12.0), false).is_ok(), "SMLib builds 9 and 12");
-        let fits = added(9.0, 12.0);
-        for (d1, d2) in [(10.0, 12.0), (11.0, 13.0), (12.0, 15.0)] {
+        assert!(chamfer_sides(&body, &[BOSS_EDGE], 5.5, ChamferSide::Distance(12.0), false).is_ok(), "SMLib builds 5.5 and 12");
+        let fits = added(5.5, 12.0);
+        for (d1, d2) in [(10.0, 12.0), (11.0, 13.0), (12.0, 14.0)] {
             assert!(
                 matches!(chamfer_sides(&body, &[BOSS_EDGE], d1, ChamferSide::Distance(d2), false), Err(KernelError::TooLarge(_))),
                 "{d1} and {d2}"
@@ -2685,23 +2700,22 @@ mod tests {
     }
 
     /// On the boss's base edge the distance is along the plate and the angle is from it:
-    /// solidcore turns the angle into the distance along the boss at the edge's wedge,
-    /// `d sin(angle) / sin(wedge + angle)`, and the chamfer is the two-distance one
-    /// ([`boss_chamfer_sides_section`]); 5 at 60°, which fits, is SMLib's body and that section.
-    /// At 45°, 6.43 is the largest that fits the plate's face (its contact at x 32.4942) and is
-    /// SMLib's; 6.45 SMLib fails as an operation, and from 6.5 it refuses as too large, naming
+    /// the chamfer's line leaves the plate's foot at the angle to the plate and meets the boss's
+    /// circle where [`boss_chamfer_angle_section`] says (#1023; a line steeper than the circle's
+    /// tangent from the foot, as 60° at 5, never meets it and is refused); 5 at 30°, which fits, is
+    /// SMLib's body and that section.
+    /// At 45°, 5.70 is the largest that fits the plate's face (the face ends 5.7031 from the edge)
+    /// and is SMLib's; 5.72 SMLib fails as an operation, and from 5.75 it refuses as too large, naming
     /// the part of the sizes that fits. Carried on they build, the chamfer growing with its
     /// distance through there, each its section over the boss's 24 mm less the part past the
     /// corner's arc; 8 at 45° has its contact line on the plate ending on the arc, its top edge
-    /// meeting the corner at x 32.5, and its contact on the boss. 10 at 60° (12.06 along the
-    /// boss) has its contact on the boss behind the edge's line and is whole there. One face,
+    /// meeting the corner at x 32.5, and its contact on the boss. 15 at 30° has its contact on the boss behind the edge's line and is whole there. One face,
     /// one shell.
     #[test]
     fn a_distance_and_angle_chamfer_runs_on_past_where_its_face_turns_into_a_round() {
         let body = boss_on_rounded_plate();
         let before = crate::measure(&body).unwrap().volume;
-        let wedge = ((-10.5_f64 + 14.038301415494109) / 12.90348790056394).acos();
-        let section = |d: f64, angle: f64| boss_chamfer_sides_section(d, d * angle.sin() / (wedge + angle).sin());
+        let section = |d: f64, angle: f64| boss_chamfer_angle_section(d, angle);
         let plain = |d: f64, angle: f64| chamfer_sides(&body, &[BOSS_EDGE], d, ChamferSide::Angle(angle), false);
         let carried = |d: f64, angle: f64| {
             let out = chamfer_sides_carrying_face(&body, &[BOSS_EDGE], d, ChamferSide::Angle(angle), false).unwrap_or_else(|e| panic!("{d}: {e}"));
@@ -2712,16 +2726,16 @@ mod tests {
             assert_eq!(faces_from_edge(&out, &body, BOSS_EDGE), 1, "{d}");
             (out, added)
         };
-        let steep = 60f64.to_radians();
+        let steep = 30f64.to_radians();
         let fits = crate::measure(&plain(5.0, steep).unwrap()).unwrap().volume - before;
         assert!((24.0 * section(5.0, steep).2 - fits).abs() < 1e-4, "{fits}");
 
         let angle = 45f64.to_radians();
-        assert!(matches!(plain(6.45, angle), Err(KernelError::Failed(_))));
+        assert!(matches!(plain(5.72, angle), Err(KernelError::Failed(_))));
         assert!(matches!(plain(8.0, angle), Err(KernelError::TooLarge(why)) if why.contains("the largest distance that fits is")));
-        let (largest, mut last) = carried(6.43, angle);
-        assert_eq!(crate::encode_native_body(&largest).unwrap(), crate::encode_native_body(&plain(6.43, angle).unwrap()).unwrap());
-        for d in [6.44, 6.45, 6.5, 7.0, 8.0] {
+        let (largest, mut last) = carried(5.7, angle);
+        assert_eq!(crate::encode_native_body(&largest).unwrap(), crate::encode_native_body(&plain(5.7, angle).unwrap()).unwrap());
+        for d in [5.71, 5.72, 5.75, 6.0, 8.0] {
             let (out, added) = carried(d, angle);
             assert!(added > last, "{d}: {added}");
             last = added;
@@ -2734,25 +2748,25 @@ mod tests {
             }
         }
 
-        assert!(matches!(plain(10.0, steep), Err(KernelError::TooLarge(_))));
-        let (out, _) = carried(10.0, steep);
-        let (_, q, _) = section(10.0, steep);
+        assert!(matches!(plain(15.0, steep), Err(KernelError::TooLarge(_))));
+        let (out, _) = carried(15.0, steep);
+        let (_, q, _) = section(15.0, steep);
         assert!(q.0 < BOSS_EDGE.x, "the contact on the boss is behind the edge's line");
         for z in [0.0, -24.0] {
             assert!(has_vertex(&out, Vec3::new(q.0, q.1, z), 1e-6), "no vertex on the boss at z {z}");
         }
     }
 
-    /// What carrying the face on does not build keeps SMLib's own error: 6 along the plate with
-    /// 12 along the boss, whose contact on the plate fits its face (x 28.35). SMLib fails it for
+    /// What carrying the face on does not build keeps SMLib's own error: 5 along the plate with
+    /// 16 of arc round the boss, whose contact on the plate fits its face (x 31.797). SMLib fails it for
     /// the boss's side, which carrying the plate's face on does not change.
     #[test]
     fn a_two_sided_chamfer_that_is_not_carried_on_keeps_smlibs_error() {
         let body = boss_on_rounded_plate();
-        let side = ChamferSide::Distance(12.0);
-        let plain = chamfer_sides(&body, &[BOSS_EDGE], 6.0, side, false).unwrap_err();
+        let side = ChamferSide::Distance(16.0);
+        let plain = chamfer_sides(&body, &[BOSS_EDGE], 5.0, side, false).unwrap_err();
         assert!(matches!(&plain, KernelError::Failed(why) if why.contains("reach past the rails")), "{plain}");
-        let kept = chamfer_sides_carrying_face(&body, &[BOSS_EDGE], 6.0, side, false).unwrap_err();
+        let kept = chamfer_sides_carrying_face(&body, &[BOSS_EDGE], 5.0, side, false).unwrap_err();
         assert_eq!(kept.to_string(), plain.to_string());
         assert_eq!(std::mem::discriminant(&kept), std::mem::discriminant(&plain));
     }
@@ -3887,6 +3901,240 @@ mod tests {
             let after = crate::measure(&out).unwrap().volume;
             let removed = 10.0 * 0.5 * 1.5 * 1.5;
             assert!(((before - after) - removed).abs() < 1e-5, "len={side_edge_len}: {} vs {removed}", before - after);
+        }
+    }
+
+    /// A pin turned about the x axis (#1023): radius 2 for x in [-6, 2 + sqrt 5], then a spherical
+    /// end of radius 3 about (2, 0, 0) to x = 5. The cylinder and the sphere meet in a circle at
+    /// x = 2 + sqrt 5, 131.81 degrees inside the material.
+    fn sphere_ended_pin() -> Body {
+        use solidcore_record::Seg2;
+        let end = 2.0 + 5.0_f64.sqrt();
+        let c = Vec2::new(2.0, 0.0);
+        let start = 2.0_f64.atan2(5.0_f64.sqrt());
+        let segs = vec![
+            Seg2::Line { a: Vec2::new(5.0, 0.0), b: Vec2::new(-6.0, 0.0) },
+            Seg2::Line { a: Vec2::new(-6.0, 0.0), b: Vec2::new(-6.0, 2.0) },
+            Seg2::Line { a: Vec2::new(-6.0, 2.0), b: Vec2::new(end, 2.0) },
+            Seg2::Arc { center: c, radius: 3.0, start, sweep: -start },
+        ];
+        let region = Region2 { outer: Loop2 { segs }, holes: vec![] };
+        crate::revolve_whole(&Plane::XZ, &[region], Vec2::ZERO, Vec2::new(1.0, 0.0), std::f64::consts::TAU).unwrap().pop().unwrap()
+    }
+
+    const PIN_EDGE: Vec3 = Vec3::new(2.0 + 2.23606797749979, 0.0, 2.0);
+
+    /// What a chamfer takes off the pin: `2 pi` times the integral of the radius over the
+    /// section between the cylinder, the sphere and the chamfer's line, by Green's theorem
+    /// (`-pi` times the integral of `r^2 dx` round the section, counter-clockwise), with the
+    /// arc in 200 000 steps. The feet are `(x, r)` on the cylinder (r = 2) and on the sphere.
+    fn pin_removed(on_cylinder: [f64; 2], on_sphere: [f64; 2]) -> f64 {
+        let end = 2.0 + 5.0_f64.sqrt();
+        let straight = |a: [f64; 2], b: [f64; 2]| (a[1] * a[1] + a[1] * b[1] + b[1] * b[1]) / 3.0 * (b[0] - a[0]);
+        // the sphere's arc from its foot back up to the edge
+        let angle_of = |p: [f64; 2]| p[1].atan2(p[0] - 2.0);
+        let (from, to) = (angle_of(on_sphere), angle_of([end, 2.0]));
+        let n = 200_000;
+        let mut arc = 0.0;
+        for i in 0..n {
+            let (a0, a1) = (from + (to - from) * i as f64 / n as f64, from + (to - from) * (i + 1) as f64 / n as f64);
+            let am = 0.5 * (a0 + a1);
+            let r2 = |a: f64| 9.0 * a.sin() * a.sin();
+            let dx = |a: f64| 2.0 + 3.0 * a.cos();
+            arc += (r2(a0) + 4.0 * r2(am) + r2(a1)) / 6.0 * (dx(a1) - dx(a0));
+        }
+        // chord, sphere arc to the edge, the cylinder back to the chamfer's foot
+        let loop_integral = straight(on_cylinder, on_sphere) + arc + straight([end, 2.0], on_cylinder);
+        (std::f64::consts::PI * loop_integral).abs()
+    }
+
+    /// The point where the sphere is first met by the line from `(x0, 2)` that falls with slope
+    /// `-tan(angle)` towards the sphere.
+    fn sphere_foot_of_slope(x0: f64, angle: f64) -> [f64; 2] {
+        let t = angle.tan();
+        // (x - 2)^2 + (2 - t (x - x0))^2 = 9
+        let a = 1.0 + t * t;
+        let b = -4.0 - 2.0 * t * (2.0 + t * x0);
+        let c = 4.0 + (2.0 + t * x0) * (2.0 + t * x0) - 9.0;
+        let x = (-b + (b * b - 4.0 * a * c).sqrt()) / (2.0 * a);
+        [x, 2.0 - t * (x - x0)]
+    }
+
+    fn pin_taken(out: &Body) -> f64 {
+        crate::measure(&sphere_ended_pin()).unwrap().volume - crate::measure(out).unwrap().volume
+    }
+
+    /// Equal distances on a cylinder meeting a sphere are measured along each face's own curve
+    /// (#1023): 0.3 along the cylinder and 0.3 along the sphere's arc, 0.4314074 off the pin
+    /// (the issue's closed form), where the planar offsets took 0.5731503. 0.1 takes 0.0472649.
+    #[test]
+    fn an_equal_chamfer_of_a_cylinder_meeting_a_sphere_is_measured_along_both_faces() {
+        let pin = sphere_ended_pin();
+        let end = 2.0 + 5.0_f64.sqrt();
+        for d in [0.3, 0.1] {
+            let foot = |on_sphere: f64| {
+                let a = 2.0_f64.atan2(5.0_f64.sqrt()) - on_sphere / 3.0;
+                [2.0 + 3.0 * a.cos(), 3.0 * a.sin()]
+            };
+            let want = pin_removed([end - d, 2.0], foot(d));
+            let out = chamfer(&pin, &[PIN_EDGE], d).unwrap();
+            let got = pin_taken(&out);
+            assert!((got - want).abs() < 1e-6, "{d}: took {got} of {want}");
+            assert!(out.validity().is_empty(), "{:?}", out.validity());
+        }
+        let want = pin_removed([end - 0.3, 2.0], {
+            let a = 2.0_f64.atan2(5.0_f64.sqrt()) - 0.1;
+            [2.0 + 3.0 * a.cos(), 3.0 * a.sin()]
+        });
+        assert!((want - 0.4314074).abs() < 1e-6, "{want}");
+    }
+
+    /// A distance and an angle with the distance along the cylinder (0.3, line at 30 degrees to
+    /// it, which meets the sphere at x = 4.4824) takes 0.5839245 off the pin, whichever way the
+    /// sides are flipped to put the distance there (#1023); the distance along the sphere's arc
+    /// with the angle to the sphere's tangent there takes what its own section does.
+    #[test]
+    fn a_distance_and_angle_chamfer_of_a_cylinder_meeting_a_sphere_is_measured_on_the_faces() {
+        let pin = sphere_ended_pin();
+        let end = 2.0 + 5.0_f64.sqrt();
+        let angle = 30.0_f64.to_radians();
+        let on_cylinder = pin_removed([end - 0.3, 2.0], sphere_foot_of_slope(end - 0.3, angle));
+        assert!((on_cylinder - 0.5839245).abs() < 1e-6, "{on_cylinder}");
+        // distance on the sphere: the foot is 0.3 of arc round from the edge; the line leaves
+        // its tangent there at 30 degrees, back towards the cylinder's r = 2
+        let a = 2.0_f64.atan2(5.0_f64.sqrt()) - 0.1;
+        let foot = [2.0 + 3.0 * a.cos(), 3.0 * a.sin()];
+        // its line leaves the tangent back towards the edge, turned in by the angle: direction
+        // (-sin(a + angle), cos(a + angle)) from the foot, up to the cylinder's r = 2
+        let run = (2.0 - foot[1]) / (a + angle).cos();
+        let x = foot[0] - run * (a + angle).sin();
+        let on_sphere = pin_removed([x, 2.0], foot);
+        let mut seen = Vec::new();
+        for flip in [false, true] {
+            let out = chamfer_sides(&pin, &[PIN_EDGE], 0.3, ChamferSide::Angle(angle), flip).unwrap();
+            seen.push(pin_taken(&out));
+        }
+        for (flip, got) in seen.iter().enumerate() {
+            let near = |want: f64| (got - want).abs() < 1e-6;
+            assert!(near(on_cylinder) || near(on_sphere), "flip {}: took {got}, wants {on_cylinder} or {on_sphere}", flip == 1);
+        }
+        assert!(
+            (seen[0] - on_cylinder).abs() < 1e-6 && (seen[1] - on_sphere).abs() < 1e-6
+                || (seen[1] - on_cylinder).abs() < 1e-6 && (seen[0] - on_sphere).abs() < 1e-6,
+            "the two flips put the distance on the two faces: {seen:?}"
+        );
+    }
+
+    /// The same two distances asked of the two faces unequal (0.3 on the cylinder, 0.2 on the
+    /// sphere's arc), both ways round (#1023).
+    #[test]
+    fn a_two_distance_chamfer_of_a_cylinder_meeting_a_sphere_is_measured_on_the_faces() {
+        let pin = sphere_ended_pin();
+        let end = 2.0 + 5.0_f64.sqrt();
+        let foot = |on_sphere: f64| {
+            let a = 2.0_f64.atan2(5.0_f64.sqrt()) - on_sphere / 3.0;
+            [2.0 + 3.0 * a.cos(), 3.0 * a.sin()]
+        };
+        let want = pin_removed([end - 0.3, 2.0], foot(0.2));
+        let other = pin_removed([end - 0.2, 2.0], foot(0.3));
+        let mut seen = Vec::new();
+        for flip in [false, true] {
+            let out = chamfer_sides(&pin, &[PIN_EDGE], 0.3, ChamferSide::Distance(0.2), flip).unwrap();
+            seen.push(pin_taken(&out));
+        }
+        let near = |a: f64, b: f64| (a - b).abs() < 1e-6;
+        assert!(
+            near(seen[0], want) && near(seen[1], other) || near(seen[1], want) && near(seen[0], other),
+            "{seen:?} against {want} (0.3 on the cylinder) and {other} (0.3 on the sphere)"
+        );
+    }
+
+    /// A sphere of radius 3 cut flat at z = 2 (revolved about z), the rim of the flat on the
+    /// sphere chamfered by equal distances (#1023): 0.3 along the plane and 0.3 along the
+    /// sphere's arc. The section is the plane's foot, the sphere's foot and the arc between
+    /// the sphere's foot and the rim, `pi` times the integral of `r^2 dz` round it.
+    #[test]
+    fn an_equal_chamfer_of_a_plane_meeting_a_sphere_is_measured_along_both_faces() {
+        use solidcore_record::Seg2;
+        let rim = 5.0_f64.sqrt();
+        let top = 2.0_f64.atan2(rim);
+        let segs = vec![
+            Seg2::Line { a: Vec2::new(0.0, 2.0), b: Vec2::new(rim, 2.0) },
+            Seg2::Arc { center: Vec2::ZERO, radius: 3.0, start: top, sweep: -(top + std::f64::consts::FRAC_PI_2) },
+            Seg2::Line { a: Vec2::new(0.0, -3.0), b: Vec2::new(0.0, 2.0) },
+        ];
+        let region = Region2 { outer: Loop2 { segs }, holes: vec![] };
+        let body = crate::revolve_whole(&Plane::XZ, &[region], Vec2::ZERO, Vec2::new(0.0, 1.0), std::f64::consts::TAU).unwrap().pop().unwrap();
+        for d in [0.3, 0.1] {
+            let a = top - d / 3.0;
+            let foot = [3.0 * a.cos(), 3.0 * a.sin()];
+            let chord = (rim - d, 2.0);
+            let straight = (chord.0 * chord.0 + chord.0 * foot[0] + foot[0] * foot[0]) / 3.0 * (foot[1] - 2.0);
+            let n = 200_000;
+            let mut arc = 0.0;
+            for i in 0..n {
+                let (a0, a1) = (a + d / 3.0 * i as f64 / n as f64, a + d / 3.0 * (i + 1) as f64 / n as f64);
+                let am = 0.5 * (a0 + a1);
+                let r2 = |q: f64| 9.0 * q.cos() * q.cos();
+                let z = |q: f64| 3.0 * q.sin();
+                arc += (r2(a0) + 4.0 * r2(am) + r2(a1)) / 6.0 * (z(a1) - z(a0));
+            }
+            let want = (std::f64::consts::PI * (straight + arc)).abs();
+            let out = chamfer(&body, &[Vec3::new(rim * 0.5_f64.sqrt(), rim * 0.5_f64.sqrt(), -2.0)], d).unwrap();
+            let got = crate::measure(&body).unwrap().volume - crate::measure(&out).unwrap().volume;
+            assert!((got - want).abs() < 1e-6, "{d}: took {got} of {want}");
+        }
+    }
+
+    /// The lens where two balls overlap (radius 3 about the origin, radius 2.5 about (4, 0, 0),
+    /// turned about the x axis), its rim chamfered by equal distances along both spheres' arcs
+    /// (#1023). The section is the rim `E`, the arc on each sphere to its foot (angles
+    /// `phi - d / R` and `phi + d / R` about the centres), and the chord between the feet:
+    /// `pi` times the integral of `r^2 dx` round it is what the chamfer takes off.
+    #[test]
+    fn an_equal_chamfer_of_a_sphere_meeting_a_sphere_is_measured_along_both_faces() {
+        use solidcore_record::Seg2;
+        let (r1, r2, gap) = (3.0_f64, 2.5_f64, 4.0_f64);
+        let rim_x = (r1 * r1 - r2 * r2 + gap * gap) / (2.0 * gap);
+        let rim_r = (r1 * r1 - rim_x * rim_x).sqrt();
+        let phi1 = rim_r.atan2(rim_x);
+        let phi2 = rim_r.atan2(rim_x - gap);
+        let segs = vec![
+            Seg2::Arc { center: Vec2::new(gap, 0.0), radius: r2, start: std::f64::consts::PI, sweep: phi2 - std::f64::consts::PI },
+            Seg2::Arc { center: Vec2::ZERO, radius: r1, start: phi1, sweep: -phi1 },
+            Seg2::Line { a: Vec2::new(r1, 0.0), b: Vec2::new(gap - r2, 0.0) },
+        ];
+        let lens = crate::revolve_whole(
+            &Plane::XZ,
+            &[Region2 { outer: Loop2 { segs }, holes: vec![] }],
+            Vec2::ZERO,
+            Vec2::new(1.0, 0.0),
+            std::f64::consts::TAU,
+        )
+        .unwrap()
+        .pop()
+        .unwrap();
+        // pi times the integral of r^2 dx along an arc of the circle (radius R) between two angles
+        let arc = |r: f64, a0: f64, a1: f64| {
+            let n = 100_000;
+            let mut sum = 0.0;
+            for i in 0..n {
+                let (p, q) = (a0 + (a1 - a0) * i as f64 / n as f64, a0 + (a1 - a0) * (i + 1) as f64 / n as f64);
+                let m = 0.5 * (p + q);
+                let f = |a: f64| r * r * a.sin() * a.sin();
+                sum += (f(p) + 4.0 * f(m) + f(q)) / 6.0 * r * (q.cos() - p.cos());
+            }
+            sum
+        };
+        for d in [0.3, 0.1] {
+            let (a1, a2) = (phi1 - d / r1, phi2 + d / r2);
+            let f1 = [r1 * a1.cos(), r1 * a1.sin()];
+            let f2 = [gap + r2 * a2.cos(), r2 * a2.sin()];
+            let chord = (f1[1] * f1[1] + f1[1] * f2[1] + f2[1] * f2[1]) / 3.0 * (f2[0] - f1[0]);
+            let want = (std::f64::consts::PI * (arc(r1, phi1, a1) + chord + arc(r2, a2, phi2))).abs();
+            let out = chamfer(&lens, &[Vec3::new(rim_x, 0.0, rim_r)], d).unwrap();
+            let got = crate::measure(&lens).unwrap().volume - crate::measure(&out).unwrap().volume;
+            assert!((got - want).abs() < 1e-6, "{d}: took {got} of {want}");
         }
     }
 }

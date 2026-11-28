@@ -21,12 +21,17 @@ fn holder() -> Body {
 }
 
 /// Integrate the removed horizontal strips analytically across the capsule's width, then
-/// use Simpson integration in height. The rolling section's centre is 2 below the top and
-/// 62 from the cutter's axis; its wall contact is 60/62 of that vector from the axis.
+/// use Simpson integration in height. The chamfer's distance is measured along each face
+/// (#1023): the top is a plane meeting the cutter's cylinder (radius 60 about the axis y = 70
+/// at the top, depth 0) at y = 10; the foot on the top is `distance` from there, at
+/// y = 10 - distance, and the foot on the cylinder is `distance` of arc round it, a turn
+/// `distance / 60`: y = 70 - 60 cos(turn) at depth 60 sin(turn). The bevel is the straight line
+/// between the feet.
 fn expected_removed(distance: f64) -> f64 {
-    let center_y = 70.0 - ((60.0 + distance).powi(2) - distance.powi(2)).sqrt();
-    let contact_y = 70.0 + (center_y - 70.0) * 60.0 / (60.0 + distance);
-    let depth = distance * 60.0 / (60.0 + distance);
+    let turn = distance / 60.0;
+    let center_y = 10.0 - distance;
+    let contact_y = 70.0 - 60.0 * turn.cos();
+    let depth = 60.0 * turn.sin();
     let area = |y: f64| {
         let u = (y - 10.0).clamp(-10.0, 0.0);
         u * (100.0 - u * u).sqrt() + 100.0 * (u / 10.0).asin() + 20.0 * (y - 10.0).max(0.0)
@@ -64,8 +69,8 @@ fn chamfer_the_top_lip_at_a_tangent_wall_junction() {
     assert!(history.faces.iter().any(|f| f.origins.iter().any(|o| matches!(o, solidcraft_kernel::history::FaceOrigin::Edge { operand: 0, .. }))));
     // Fine enough that the meshes' chord error is below the tolerance: the removed volume
     // measured on meshes is 37.404 at chord 0.002, 37.672 at 0.0005, 37.761 at 0.0001 and 37.759
-    // at 0.00003, converged on the expected 37.762 (the chamfer as the chord between the contacts
-    // of a 2 mm ball). The planner's meshes of the two bodies differ, so their chord errors no
+    // at 0.00003, converged on the expected removed volume (the chamfer as the chord between the contacts
+    // of 2 mm along the top and 2 mm of arc round the cutter). The planner's meshes of the two bodies differ, so their chord errors no
     // longer cancel as truck's did.
     let mesh = |body: &Body| body.mesh(&solidcraft_kernel::MeshTolerance::chord(0.0001)).unwrap();
     let before = mesh(&body).measure().volume;
