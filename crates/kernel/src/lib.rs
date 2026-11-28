@@ -360,6 +360,8 @@ pub use fill::patch_edges_report;
 pub use fill::patch_edges_with;
 pub use held::RecordReadSite;
 pub use held::RecordReads;
+pub use held::StubBox;
+pub use held::held_stub_box;
 pub use held::record_reads;
 pub use helix::MAX_HELIX_TURNS;
 pub use helix::require_unfolded_screw_section;

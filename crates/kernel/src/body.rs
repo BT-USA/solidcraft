@@ -879,8 +879,29 @@ impl Body {
 
     /// A body another kernel holds in its own form ([`solidcraft_kernel_api::HeldBody`]): it
     /// stays there, and its record is made only when something reads it ([`Body::record`]).
+    /// Its size and box are the kernel's when it gives a box ([`solidcraft_kernel_api::HeldBody::bounds`]).
     pub fn held(body: std::sync::Arc<dyn solidcraft_kernel_api::HeldBody>) -> Body {
-        Body { record: RecordCell::Held(std::sync::Arc::new(crate::held::HeldCell::new(body))), size: 0.0, ..Body::bare(empty_record(), None) }
+        let bounds =
+            body.bounds().map(|[lo, hi]| Aabb3 { min: v3(lo), max: v3(hi) }).filter(|b| b.min.is_finite() && b.max.is_finite() && !b.is_empty());
+        let size = bounds.map_or(0.0, |b| b.diagonal()).max(0.0);
+        Body {
+            record: RecordCell::Held(std::sync::Arc::new(crate::held::HeldCell::new(body))),
+            size: if size.is_finite() { size } else { 0.0 },
+            bounds: std::sync::Arc::new(std::sync::Mutex::new(bounds)),
+            ..Body::bare(empty_record(), None)
+        }
+    }
+
+    /// The held body's own answer to `ask`, when another kernel holds this body and answers it;
+    /// `None`: the record answers.
+    fn held_answer<T>(&self, ask: impl FnOnce(&dyn solidcraft_kernel_api::HeldBody) -> Option<T>) -> Option<T> {
+        self.held_body().and_then(ask)
+    }
+
+    /// The held body's triangles at `t`, as a mesh, when its kernel gives them.
+    fn held_mesh(&self, t: &MeshTolerance) -> Option<Result<Mesh>> {
+        let made = self.held_answer(|h| h.tessellate(t.chord, t.angle))?;
+        Some(made.map(crate::held::mesh_of).map_err(KernelError::from))
     }
 
     /// The body as its kernel holds it, when another kernel holds it ([`Body::held`]).
@@ -1290,6 +1311,10 @@ impl Body {
 
     /// The first face of `self` met by the ray from `origin` along `dir`, as `(distance, face_index)`.
     pub fn raycast_face(&self, origin: Vec3, dir: Vec3) -> Option<(f64, usize)> {
+        if let Some(hits) = self.held_answer(|h| h.ray([origin.x, origin.y, origin.z], [dir.x, dir.y, dir.z])) {
+            let first = hits.ok()?.into_iter().filter(|h| h.distance.is_finite()).min_by(|a, b| a.distance.total_cmp(&b.distance))?;
+            return Some((first.distance, first.face));
+        }
         let form = self.ops_body()?;
         let (ops, order) = &*form;
         let hit = ops.face_hit_by_ray(order, [origin.x, origin.y, origin.z], [dir.x, dir.y, dir.z]).ok()??;
@@ -1298,6 +1323,9 @@ impl Body {
 
     /// Whether `p` lies inside or on the boundary of `self` (for a B-rep body).
     pub fn contains(&self, p: Vec3) -> bool {
+        if let Some(class) = self.held_answer(|h| h.classify([p.x, p.y, p.z])) {
+            return matches!(class, Ok(solidcraft_kernel_api::ClassifiedPoint::Inside | solidcraft_kernel_api::ClassifiedPoint::On { .. }));
+        }
         let Some(form) = self.ops_body() else {
             return false;
         };
@@ -1315,6 +1343,9 @@ impl Body {
             return EdgeLines::default();
         }
         let chord = (self.size() * 1e-3).max(1e-4);
+        if let Some(made) = self.held_mesh(&MeshTolerance::chord(chord)) {
+            return EdgeLines(made.map(|m| m.edges.into_iter().enumerate().collect()).unwrap_or_default());
+        }
         EdgeLines(self.record.edges.iter().enumerate().filter_map(|(i, e)| edge_points(e, chord).ok().map(|pts| (i, pts))).collect())
     }
 
@@ -1822,6 +1853,11 @@ impl Body {
     /// triangles'.
     pub fn outline_bounds(&self) -> Aabb3 {
         let mut b = Aabb3::EMPTY;
+        if self.held_body().is_some()
+            && let Some(held) = self.bounds.lock().ok().and_then(|g| *g)
+        {
+            return held;
+        }
         if let Some(m) = &self.mesh {
             for p in &m.positions {
                 b.add(*p);
@@ -1940,6 +1976,9 @@ impl Body {
         if let Some(m) = &self.mesh {
             return Ok(m.to_mesh());
         }
+        if let Some(made) = self.held_mesh(t) {
+            return made;
+        }
         // A placed copy shows its original's mesh, moved: the part is meshed once for every copy.
         if let Some((shared, m)) = self.display_of.as_deref() {
             let made = remembered(&shared.meshes, t, || shared.original.mesh_untimed(t))?;
@@ -1958,6 +1997,10 @@ impl Body {
 
     /// The memo of this record's meshes or plans, when this body keeps one for its record.
     pub(crate) fn memo(&self) -> Option<&MeshMemo> {
+        // A held body's meshes are its kernel's, kept by no memo of a record.
+        if self.held_body().is_some() {
+            return None;
+        }
         self.meshes.as_deref().filter(|m| std::sync::Arc::ptr_eq(&m.record, self.record.arc()))
     }
 
@@ -1990,6 +2033,11 @@ impl Body {
     fn mesh_plan_untimed(&self, t: &MeshTolerance) -> Result<solidcraft_geom::tess::TessPlan> {
         if self.is_mesh() {
             return Err(KernelError::Invalid("a mesh body has no surfaces to mesh".into()));
+        }
+        // A body another kernel holds is drawn from its own triangles ([`Body::mesh`]): the plan
+        // is solidcore's, made of the record.
+        if let Some(h) = self.held_body() {
+            return Err(KernelError::Failed(format!("no display plan of a body {} holds: it is drawn from its mesh", h.backend())));
         }
         // A placed copy is planned as its original, moved (as `Body::mesh` shows the original's
         // mesh): the part is planned once for every copy.
@@ -2039,6 +2087,9 @@ impl Body {
     /// (or a clone of it) lives: for many operations on one large body at the same tolerance,
     /// such as cutting it down to the region of each of many contacts.
     pub fn keeping_meshes(&self) -> Body {
+        if self.held_body().is_some() {
+            return self.clone();
+        }
         Body {
             meshes: Some(std::sync::Arc::new(MeshMemo {
                 record: self.record.arc().clone(),
@@ -2055,6 +2106,9 @@ impl Body {
     /// it at display tolerance ([`Body::unmeshed_display_faces`]), and its display mesh and the
     /// viewport's plan take that plan rather than planning the part twice more.
     pub fn keeping_plans(&self) -> Body {
+        if self.held_body().is_some() {
+            return self.clone();
+        }
         Body {
             meshes: Some(std::sync::Arc::new(MeshMemo {
                 record: self.record.arc().clone(),
@@ -2438,6 +2492,13 @@ impl Body {
                 PointClass::Outside
             });
         }
+        if let Some(class) = self.held_answer(|h| h.classify([p.x, p.y, p.z])) {
+            return Ok(match class? {
+                solidcraft_kernel_api::ClassifiedPoint::Inside => PointClass::Inside,
+                solidcraft_kernel_api::ClassifiedPoint::Outside => PointClass::Outside,
+                solidcraft_kernel_api::ClassifiedPoint::On { .. } => PointClass::OnBoundary,
+            });
+        }
         let class = self.smlib()?.classify_point([p.x, p.y, p.z]).map_err(|e| KernelError::smlib("SMLib point classification", e))?;
         Ok(point_class(class))
     }
@@ -2644,6 +2705,15 @@ impl Body {
     /// [`KernelError::Invalid`] for a coordinate that is not finite or a direction of no length;
     /// [`KernelError::Failed`] for a mesh body and the kernel's failure.
     pub fn face_hits_by_ray(&self, origin: [f64; 3], direction: [f64; 3]) -> Result<Vec<solidcraft_kernel_api::FaceHit>> {
+        if self.held_body().is_some() {
+            let finite = origin.iter().chain(&direction).all(|v| v.is_finite());
+            if !finite || direction.iter().all(|v| *v == 0.0) {
+                return Err(KernelError::Invalid("faces along a ray: the ray is not a finite point and direction".into()));
+            }
+        }
+        if let Some(hits) = self.held_answer(|h| h.ray(origin, direction)) {
+            return hits.map_err(KernelError::from);
+        }
         let form = self.exact_form("faces along a ray")?;
         let (body, order) = &*form;
         let hits = body.face_hits_by_ray(order, origin, direction).map_err(|e| ops_failure("faces along a ray", e))?;
