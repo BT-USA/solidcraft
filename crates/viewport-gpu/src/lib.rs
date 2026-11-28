@@ -90,9 +90,38 @@ fn popped(f: impl std::future::Future<Output = Option<wgpu::Error>>) -> Option<w
     }
 }
 
-/// Error scopes catching what GPU work may raise (popped by [`caught`]).
-fn error_scopes(device: &wgpu::Device) -> [wgpu::ErrorScopeGuard; 3] {
-    [wgpu::ErrorFilter::OutOfMemory, wgpu::ErrorFilter::Internal, wgpu::ErrorFilter::Validation].map(|f| device.push_error_scope(f))
+/// Error scopes catching what GPU work may raise (out of memory, internal and validation
+/// errors), popped by [`ErrorScopes::pop`] or dropped. wgpu panics unless a thread's scopes are
+/// popped last to first, and an unpopped guard pops its own scope when it is dropped, so the
+/// fields are declared last pushed first: Rust drops fields in declaration order, so an early
+/// return pops them in order too. Use this, never an array of guards: an array drops its
+/// elements first to last.
+pub(crate) struct ErrorScopes {
+    validation: wgpu::ErrorScopeGuard,
+    internal: wgpu::ErrorScopeGuard,
+    out_of_memory: wgpu::ErrorScopeGuard,
+}
+
+impl ErrorScopes {
+    /// The three scopes pushed on `device`, on this thread.
+    fn push(device: &wgpu::Device) -> Self {
+        let out_of_memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
+        let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        ErrorScopes { validation, internal, out_of_memory }
+    }
+
+    /// The scopes popped, last pushed first: the error each caught, on its way.
+    fn pop(self) -> [impl std::future::Future<Output = Option<wgpu::Error>> + use<>; 3] {
+        let ErrorScopes { validation, internal, out_of_memory } = self;
+        // An array's elements are evaluated left to right, so this is the order they are popped.
+        [validation.pop(), internal.pop(), out_of_memory.pop()]
+    }
+}
+
+/// [`ErrorScopes`] pushed on `device`.
+fn error_scopes(device: &wgpu::Device) -> ErrorScopes {
+    ErrorScopes::push(device)
 }
 
 /// The error to report from several that scopes caught: running out of memory when any scope
@@ -119,8 +148,8 @@ pub fn describe_error(error: &wgpu::Error) -> String {
 }
 
 /// The error the scopes caught ([`preferred_error`]), described.
-fn caught(scopes: [wgpu::ErrorScopeGuard; 3]) -> Option<String> {
-    preferred_error(scopes.into_iter().rev().filter_map(|scope| popped(scope.pop()))).as_ref().map(describe_error)
+fn caught(scopes: ErrorScopes) -> Option<String> {
+    preferred_error(scopes.pop().into_iter().filter_map(popped)).as_ref().map(describe_error)
 }
 
 /// As `create_buffer_init`, without its panic when the device refuses the buffer (out of memory,

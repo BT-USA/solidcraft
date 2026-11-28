@@ -56,6 +56,9 @@ struct State {
     /// The resolve textures cleared before their first resolve (tests count them).
     #[cfg(test)]
     resolve_clears: u32,
+    /// Run on the device right after a picture's submission (tests lose the device there).
+    #[cfg(test)]
+    after_submit: Option<Box<dyn FnOnce(&wgpu::Device) + Send>>,
 }
 
 /// A capturer's device, with its queue and the pipelines built on it.
@@ -102,6 +105,8 @@ impl Capturer {
                 access_version: 0,
                 #[cfg(test)]
                 resolve_clears: 0,
+                #[cfg(test)]
+                after_submit: None,
             }),
             lost: Arc::default(),
         })
@@ -366,7 +371,12 @@ impl Capturer {
             size,
         );
         let submission = queue.submit([encoder.finish()]);
-        // Waiting on a device the submission found lost would panic inside wgpu.
+        #[cfg(test)]
+        if let Some(lose) = state.after_submit.take() {
+            lose(device);
+        }
+        // Waiting on a device the submission found lost would panic inside wgpu. The scopes are
+        // dropped here, last pushed first ([`crate::ErrorScopes`]).
         if self.is_lost() {
             return Err(GpuError::DeviceLost);
         }
@@ -830,6 +840,37 @@ mod tests {
         let state = capturer.state.lock().unwrap();
         let renderer = &state.gpu.as_ref().unwrap().renderer;
         assert_eq!(renderer.uploads().geometry, 0, "the renderer released the model scene after readback");
+    }
+
+    /// A device lost after a picture was submitted (a driver reset while the GPU draws) ends that
+    /// picture with the loss, never a panic: returning early dropped the picture's error scopes
+    /// first to last, and wgpu panics unless they are popped last to first. The device is
+    /// destroyed right after the submission, after a picture that worked.
+    #[test]
+    fn a_device_lost_after_a_picture_is_submitted_is_an_error_not_a_panic() {
+        let capturer = match Capturer::headless(crate::test_env::policy()) {
+            Ok(capturer) => capturer,
+            Err(e) => {
+                crate::test_env::skip_unless_required(crate::test_env::required(), &e);
+                return;
+            }
+        };
+        let (scene, cam) = (Scene::default(), Camera::default());
+        assert!(capturer.rgba(&scene, &cam, 32, 24).is_ok(), "a picture before the loss");
+        capturer.state.lock().unwrap().after_submit = Some(Box::new(|device: &wgpu::Device| {
+            device.destroy();
+            let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        }));
+        let lost = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| capturer.rgba(&scene, &cam, 32, 24)));
+        match lost {
+            Ok(Err(GpuError::DeviceLost)) => {}
+            Ok(other) => panic!("{:?}", other.map(|rgba| rgba.len())),
+            Err(panic) => {
+                let why = panic.downcast_ref::<String>().map(String::as_str).or(panic.downcast_ref::<&str>().copied());
+                panic!("the picture panicked: {why:?}")
+            }
+        }
+        assert!(capturer.is_lost());
     }
 
     /// A closed capturer has dropped its device and everything it drew with, and a picture asked
