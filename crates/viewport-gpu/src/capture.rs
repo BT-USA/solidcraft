@@ -850,7 +850,7 @@ mod tests {
     fn a_device_lost_after_a_picture_is_submitted_is_an_error_not_a_panic() {
         // Destroying a device spoils the adapter's other devices in this process (software
         // rasterizers share state), so the loss is made in a child run of this test alone.
-        const CHILD: &str = "SOLIDCRAFT_TEST_DEVICE_LOSS_CHILD";
+        const CHILD: &str = "DEVICE_LOSS_TEST_CHILD";
         if std::env::var_os(CHILD).is_none() {
             let Ok(exe) = std::env::current_exe() else { return };
             let name = "capture::tests::a_device_lost_after_a_picture_is_submitted_is_an_error_not_a_panic";
