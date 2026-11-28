@@ -879,7 +879,9 @@ impl Body {
 
     /// A body another kernel holds in its own form ([`solidcraft_kernel_api::HeldBody`]): it
     /// stays there, and its record is made only when something reads it ([`Body::record`]).
-    /// Its size and box are the kernel's when it gives a box ([`solidcraft_kernel_api::HeldBody::bounds`]).
+    /// Its box is the kernel's when it gives one ([`solidcraft_kernel_api::HeldBody::bounds`]),
+    /// and its size is that box's diagonal (a solidcore body's is its vertices' box's, a little
+    /// smaller when a face bulges past its corners).
     pub fn held(body: std::sync::Arc<dyn solidcraft_kernel_api::HeldBody>) -> Body {
         let bounds =
             body.bounds().map(|[lo, hi]| Aabb3 { min: v3(lo), max: v3(hi) }).filter(|b| b.min.is_finite() && b.max.is_finite() && !b.is_empty());
@@ -898,10 +900,32 @@ impl Body {
         self.held_body().and_then(ask)
     }
 
-    /// The held body's triangles at `t`, as a mesh, when its kernel gives them.
+    /// The held body's triangles at `t`, as a mesh, when its kernel gives them: checked as
+    /// any mesh from outside is, an error when they do not hold together.
     fn held_mesh(&self, t: &MeshTolerance) -> Option<Result<Mesh>> {
         let made = self.held_answer(|h| h.tessellate(t.chord, t.angle))?;
-        Some(made.map(crate::held::mesh_of).map_err(KernelError::from))
+        Some(made.map_err(KernelError::from).and_then(crate::held::mesh_of))
+    }
+
+    /// Faces of a held body with no triangles at `t`, when its kernel gives its triangles and
+    /// its face count; every face when it gives the count and fails to mesh.
+    fn held_unmeshed(&self, t: &MeshTolerance) -> Option<usize> {
+        let (faces, _) = self.held_answer(|h| h.counts())?;
+        match self.held_mesh(t)? {
+            Ok(m) => {
+                let mut has = vec![false; faces];
+                for &f in &m.tri_face {
+                    if let Some(h) = has.get_mut(f as usize) {
+                        *h = true;
+                    }
+                }
+                Some(has.iter().filter(|h| !**h).count())
+            }
+            Err(e) => {
+                log::warn!("a held body did not mesh: {e}");
+                Some(faces)
+            }
+        }
     }
 
     /// The body as its kernel holds it, when another kernel holds it ([`Body::held`]).
@@ -2226,6 +2250,9 @@ impl Body {
         if self.is_mesh() {
             return 0;
         }
+        if let Some(n) = self.held_unmeshed(&display_tolerance(self.size())) {
+            return n;
+        }
         if let Ok(plan) = self.mesh_plan_shared(&display_tolerance(self.size()))
             && plan.faces_with_triangles(self.face_count()).iter().all(|h| *h)
         {
@@ -2239,6 +2266,9 @@ impl Body {
     pub fn unmeshed_faces(&self) -> usize {
         if self.is_mesh() {
             return 0;
+        }
+        if let Some(n) = self.held_unmeshed(&MeshTolerance::chord(coarse_tolerance(self.size()))) {
+            return n;
         }
         let Ok(plan) = self.mesh_plan(&MeshTolerance::chord(coarse_tolerance(self.size()))) else { return self.face_count() };
         plan.faces_with_triangles(self.face_count()).iter().filter(|h| !**h).count()
@@ -2712,7 +2742,11 @@ impl Body {
             }
         }
         if let Some(hits) = self.held_answer(|h| h.ray(origin, direction)) {
-            return hits.map_err(KernelError::from);
+            // Nearest first, finite only, as solidcore's answer is.
+            let mut hits: Vec<_> =
+                hits.map_err(KernelError::from)?.into_iter().filter(|h| h.distance.is_finite() && h.point.iter().all(|v| v.is_finite())).collect();
+            hits.sort_by(|a, b| a.distance.total_cmp(&b.distance));
+            return Ok(hits);
         }
         let form = self.exact_form("faces along a ray")?;
         let (body, order) = &*form;
@@ -2911,10 +2945,16 @@ impl Body {
 
     /// B-rep faces (a mesh body is one face; [`crate::measure`] counts its triangles).
     pub fn face_count(&self) -> usize {
+        if let Some((faces, _)) = self.held_answer(|h| h.counts()) {
+            return faces;
+        }
         if self.mesh.is_some() { 1 } else { self.record.topology().faces.len() }
     }
     /// B-rep edges (none for a mesh body).
     pub fn edge_count(&self) -> usize {
+        if let Some((_, edges)) = self.held_answer(|h| h.counts()) {
+            return edges;
+        }
         self.record.topology().edges.len()
     }
     /// B-rep vertices (none for a mesh body).

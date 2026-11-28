@@ -49,9 +49,16 @@ pub trait HeldBody: Send + Sync + std::fmt::Debug + 'static {
     /// The body's own form, for the kernel's adapter to find its own type again.
     fn as_any(&self) -> &dyn std::any::Any;
 
-    /// The body's box, `[min, max]`: tight or a little larger, never smaller. `None`: the
-    /// router measures the record's.
+    /// The body's tight box, `[min, max]`: the exact box of its faces, edges and vertices, as
+    /// an exact measure of the body gives it (a box worked out from control points is not
+    /// tight). `None`: the router measures the record's.
     fn bounds(&self) -> Option<[[f64; 3]; 2]> {
+        None
+    }
+
+    /// How many faces and edges the body has, numbered as in its record. `None`: the router
+    /// counts the record's.
+    fn counts(&self) -> Option<(usize, usize)> {
         None
     }
 

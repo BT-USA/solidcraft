@@ -30,3 +30,7 @@ web-time = { workspace = true }
 # Lists the format change files (build.rs).
 [build-dependencies]
 solidcraft-format = { workspace = true }
+
+[dev-dependencies]
+# The stub kernel holding a box in its own form, for tests of bodies another kernel holds.
+solidcraft-kernel = { workspace = true, features = ["test-support"] }

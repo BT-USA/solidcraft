@@ -84,12 +84,32 @@ impl HeldCell {
 
 /// A held body's triangles as the mesh a viewport draws: positions and edges as points, the
 /// seams it names (every other edge drawn), no edge a tangent join or a protected crease.
-pub(crate) fn mesh_of(m: solidcraft_kernel_api::HeldMesh) -> solidcraft_geom::Mesh {
+/// Checked as a mesh from outside is: every index in range, one face per triangle, one normal
+/// per position, the faces of every edge, finite points; an error naming what does not hold.
+pub(crate) fn mesh_of(m: solidcraft_kernel_api::HeldMesh) -> crate::Result<solidcraft_geom::Mesh> {
+    let bad = |what: &str| Err(crate::KernelError::Invalid(format!("a held body's mesh: {what}")));
+    let n = m.positions.len();
+    if m.normals.len() != n {
+        return bad("not one normal per position");
+    }
+    if m.tri_face.len() != m.triangles.len() {
+        return bad("not one face per triangle");
+    }
+    if m.edge_faces.len() != m.edges.len() || (!m.seams.is_empty() && m.seams.len() != m.edges.len()) {
+        return bad("not one entry per edge");
+    }
+    if m.triangles.iter().flatten().any(|&i| i as usize >= n) {
+        return bad("a triangle's corner past its positions");
+    }
+    let finite = |p: &[f64; 3]| p.iter().all(|v| v.is_finite());
+    if !m.positions.iter().chain(&m.normals).chain(m.edges.iter().flatten()).all(finite) {
+        return bad("a point that is not finite");
+    }
     let point = |p: [f64; 3]| solidcore_record::Vec3::new(p[0], p[1], p[2]);
     let edges = m.edges.len();
     let mut seams = m.seams;
     seams.resize(edges, false);
-    solidcraft_geom::Mesh {
+    Ok(solidcraft_geom::Mesh {
         positions: m.positions.into_iter().map(point).collect(),
         normals: m.normals.into_iter().map(point).collect(),
         triangles: m.triangles,
@@ -100,14 +120,14 @@ pub(crate) fn mesh_of(m: solidcraft_kernel_api::HeldMesh) -> solidcraft_geom::Me
         smooth_edges: vec![false; edges],
         sharp_edges: vec![false; edges],
         edge_faces: m.edge_faces,
-    }
+    })
 }
 
-/// For tests: a kernel's box held in its own form, answering what a viewport asks (its box, its
+/// For tests (`test-support`): a kernel's box held in its own form, answering what a viewport asks (its box, its
 /// triangles, rays and points) from its six planes with no record, and giving solidcore's box
 /// record only when its record is read. Its faces and edges are numbered as that record's, so
 /// a pick names the face the record has.
-#[doc(hidden)]
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Debug)]
 pub struct StubBox {
     lo: [f64; 3],
@@ -119,8 +139,8 @@ pub struct StubBox {
     edges: Vec<[u32; 2]>,
 }
 
-/// For tests: a body [`StubBox`] holds, from `lo` to `hi`.
-#[doc(hidden)]
+/// For tests (`test-support`): a body [`StubBox`] holds, from `lo` to `hi`.
+#[cfg(any(test, feature = "test-support"))]
 pub fn held_stub_box(lo: solidcore_record::Vec3, hi: solidcore_record::Vec3) -> crate::Result<crate::Body> {
     let solid = crate::box_solid(lo, hi)?;
     let invalid = |what: &str| crate::KernelError::Invalid(format!("stub box: {what}"));
@@ -142,6 +162,7 @@ pub fn held_stub_box(lo: solidcore_record::Vec3, hi: solidcore_record::Vec3) -> 
     Ok(crate::Body::held(Arc::new(held)))
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl StubBox {
     /// Face `f`'s plane: its axis, where it crosses it, and its outward normal.
     fn plane(&self, f: usize) -> Option<(usize, f64, [f64; 3])> {
@@ -152,6 +173,7 @@ impl StubBox {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl HeldBody for StubBox {
     fn backend(&self) -> solidcraft_kernel_api::BackendId {
         solidcraft_kernel_api::BackendId("stub")
@@ -167,6 +189,9 @@ impl HeldBody for StubBox {
     }
     fn is_sheet(&self) -> Option<bool> {
         Some(false)
+    }
+    fn counts(&self) -> Option<(usize, usize)> {
+        Some((self.faces.len(), self.edges.len()))
     }
     fn tessellate(&self, _chord: f64, _angle: Option<f64>) -> Option<Result<solidcraft_kernel_api::HeldMesh, solidcraft_kernel_api::BackendError>> {
         let mut m = solidcraft_kernel_api::HeldMesh::default();
@@ -391,6 +416,7 @@ mod tests {
         assert_eq!(top.0, 70.0);
         let hits = held.face_hits_by_ray([5.0, 5.0, 100.0], [0.0, 0.0, -1.0]).unwrap();
         assert_eq!(hits.len(), 2);
+        assert!(hits[0].distance < hits[1].distance, "nearest first");
         assert_eq!(held.classify_point(Vec3::new(5.0, 5.0, 5.0)).unwrap(), crate::PointClass::Inside);
         assert_eq!(held.classify_point(Vec3::new(5.0, 5.0, 30.0)).unwrap(), crate::PointClass::OnBoundary);
         assert!(!held.contains(Vec3::new(50.0, 5.0, 5.0)));
@@ -398,11 +424,32 @@ mod tests {
         let lines = held.edge_lines();
         assert!(lines.nearest(Vec3::new(5.0, 0.0, 0.0)).is_some());
         let _ = held.keeping_plans().keeping_meshes().mesh(&tol).unwrap();
+        assert_eq!((held.face_count(), held.edge_count()), (6, 12));
+        assert_eq!((held.unmeshed_faces(), held.unmeshed_display_faces()), (0, 0));
         assert_eq!(held.held_record_reads(), Some((false, 0)), "{:?}", record_reads().sites);
         // The face a pick names is the record's, once the record is made (to store the pick).
         let record_face = held.raycast_face(Vec3::new(5.0, 5.0, 100.0), Vec3::new(0.0, 0.0, -1.0)).unwrap().1;
         let plane = held.planar_face(record_face).unwrap();
         assert_eq!(plane.x.cross(plane.y).z.signum(), 1.0, "the top face");
         assert!(held.held_record_reads().is_some_and(|(made, _)| made));
+    }
+
+    /// A held body's mesh that does not hold together is refused with why, never drawn.
+    #[test]
+    fn a_held_mesh_that_does_not_hold_together_is_refused() {
+        let tri = solidcraft_kernel_api::HeldMesh {
+            positions: vec![[0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            normals: vec![[0.0, 0.0, 1.0]; 3],
+            triangles: vec![[0, 1, 2]],
+            tri_face: vec![0],
+            ..Default::default()
+        };
+        assert!(mesh_of(tri.clone()).is_ok());
+        let past = solidcraft_kernel_api::HeldMesh { triangles: vec![[0, 1, 3]], ..tri.clone() };
+        assert!(mesh_of(past).is_err_and(|e| e.to_string().contains("past its positions")));
+        let faces = solidcraft_kernel_api::HeldMesh { tri_face: vec![], ..tri.clone() };
+        assert!(mesh_of(faces).is_err());
+        let nan = solidcraft_kernel_api::HeldMesh { positions: vec![[f64::NAN; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], ..tri };
+        assert!(mesh_of(nan).is_err());
     }
 }
