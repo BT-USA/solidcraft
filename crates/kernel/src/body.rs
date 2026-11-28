@@ -1332,6 +1332,56 @@ impl Body {
         out
     }
 
+    /// Whether `point` lies in the plane of planar face `face` (within `tolerance`) and inside the
+    /// face's outer boundary: on the face itself, or over an opening in it (a pocket's mouth, a
+    /// bore's). Exact: the face's own plane and edge curves, no mesh. The outer loop is the one
+    /// with the largest extent; a point is inside it when a ray from it crosses its edges an odd
+    /// number of times. `false` for a face that is not planar, a mesh body or an index out of range.
+    pub fn planar_face_outline_contains(&self, face: usize, point: Vec3, tolerance: f64) -> bool {
+        if self.is_mesh() {
+            return false;
+        }
+        let (Some(plane), Some(f)) = (self.planar_face(face), self.record.faces.get(face)) else { return false };
+        let Some(n) = plane.x.cross(plane.y).normalized() else { return false };
+        let o = plane.origin;
+        if (point - o).dot(n).abs() > tolerance {
+            return false;
+        }
+        let reference = if n.x.abs() < 0.9 { Vec3::new(1.0, 0.0, 0.0) } else { Vec3::new(0.0, 1.0, 0.0) };
+        let Some(u) = n.cross(reference).normalized() else { return false };
+        let v = n.cross(u);
+        let flat = |q: Vec3| ((q - o).dot(u), (q - o).dot(v));
+        let chord = (self.size() * 1e-3).max(1e-4);
+        let mut outer: Option<(f64, Vec<[(f64, f64); 2]>)> = None;
+        for l in &f.loops {
+            let brep::Loop::Edges { edges } = l else { continue };
+            let mut segments: Vec<[(f64, f64); 2]> = Vec::new();
+            for ue in edges {
+                let Some(e) = self.record.edges.get(ue.edge as usize) else { continue };
+                let Ok(pts) = edge_points(e, chord) else { return false };
+                segments.extend(pts.windows(2).map(|w| [flat(w[0]), flat(w[1])]));
+            }
+            let (mut lo, mut hi) = ((f64::INFINITY, f64::INFINITY), (f64::NEG_INFINITY, f64::NEG_INFINITY));
+            for q in segments.iter().flatten() {
+                lo = (lo.0.min(q.0), lo.1.min(q.1));
+                hi = (hi.0.max(q.0), hi.1.max(q.1));
+            }
+            let extent = (hi.0 - lo.0) * (hi.1 - lo.1);
+            if extent.is_finite() && outer.as_ref().is_none_or(|(e, _)| extent > *e) {
+                outer = Some((extent, segments));
+            }
+        }
+        let Some((_, segments)) = outer else { return false };
+        let (px, py) = flat(point);
+        let mut inside = false;
+        for [a, b] in &segments {
+            if (a.1 > py) != (b.1 > py) && px < a.0 + (py - a.1) / (b.1 - a.1) * (b.0 - a.0) {
+                inside = !inside;
+            }
+        }
+        inside
+    }
+
     /// Certify the two caps of a body built by [`crate::cylinder`]. Its wall stays uncertified.
     pub fn with_cylinder_certificate(mut self, producer: u64) -> Result<Self> {
         if producer == 0 {

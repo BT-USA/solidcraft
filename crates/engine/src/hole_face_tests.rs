@@ -1400,3 +1400,34 @@ fn saved_sketch_holes_keep_legacy_tie_break_and_look_ahead_order() {
     near(base - volume(&mut s), pi() * 25.0 * 4.0);
     assert!(!solid_at(&s, 20.0, 20.0, 4.0) && solid_at(&s, 20.0, 20.0, 16.0));
 }
+
+/// A blind hole whose position lies in the plane of a face but over a gap in it (a pocket's
+/// mouth) is measured from its position, never from the pocket floor. A box 10 x 10 x 10
+/// (z -10..0) with a 4 x 4 pocket 2 deep; a d1.5 drilled hole of depth 2.3 (118 deg tip) at
+/// (0, 0, 0) pointing -z passes 2 mm of air, then cuts 0.3 mm of full bore and the tip:
+/// pi r^2 0.3 + pi r^2 (r / tan 59 deg) / 3 with r = 0.75.
+#[test]
+fn a_blind_hole_over_a_pockets_mouth_is_measured_from_its_position() {
+    let r = 0.75_f64;
+    let tip = pi() * r * r * (r / 59.0_f64.to_radians().tan()) / 3.0;
+    let want = pi() * r * r * 0.3 + tip;
+    let build = |s: &mut Session| {
+        run(s, "solid.box", json!({"length": 10, "width": 10, "height": 10, "corner": [-5, -5, -10], "body_name": "B"}));
+        run(s, "sketch.create", json!({"plane": {"origin": [0, 0, 0], "x_dir": [1, 0, 0], "y_dir": [0, 1, 0]}, "name": "pk"}));
+        run(s, "sketch.line", json!({"points": [[-2, -2], [2, -2], [2, 2], [-2, 2], [-2, -2]], "infer": false}));
+        run(s, "sketch.finish", json!({}));
+        run(s, "solid.extrude", json!({"sketch": "pk", "operation": "cut", "distance": 2, "direction": "negative", "name": "pocket"}));
+    };
+    let tight = |removed: f64| assert!((removed - want).abs() < 1e-6, "removed {removed}, closed form {want}");
+    let mut s = Session::default();
+    build(&mut s);
+    let v0 = volume(&mut s);
+    let hole = json!({"position": [0, 0, 0], "direction": [0, 0, -1], "diameter": 1.5, "type": "drilled", "depth": 2.3, "tip_angle": "118 deg", "name": "h"});
+    // Drilled from its position: only the last 0.3 mm and the tip cut (the drilled-from-the-floor
+    // volume is 4.3299).
+    run(&mut s, "solid.hole", hole);
+    tight(v0 - volume(&mut s));
+    // Reopened from JSON, the same result: one rule on every path.
+    let mut reopened = Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
+    tight(v0 - volume(&mut reopened));
+}

@@ -10379,6 +10379,12 @@ pub fn hole_start(st: &ModelState, f: &Feature, p: Vec3, dir: Vec3) -> Vec3 {
     if !scope.is_empty() && st.bodies.iter().any(|b| b.body.is_mesh()) && on_a_brep_face(st, p, scope) {
         return p;
     }
+    // A spot in the plane of a planar face, inside its outline (over a pocket's or a bore's
+    // mouth), starts there: the hole is measured from its position, never from the floor
+    // below the opening. Exact: the face's own plane and edges.
+    if over_planar_opening(st, p) {
+        return p;
+    }
     let anywhere = hole_on_surface(st, p, dir, &[]);
     // `hole_on_surface` hands `p` itself back when `p` is on a body's boundary (or meets no body
     // at all).
@@ -10396,6 +10402,15 @@ pub fn hole_start(st: &ModelState, f: &Feature, p: Vec3, dir: Vec3) -> Vec3 {
     }
     let scope: Vec<String> = targets.iter().map(|b| b.name.clone()).collect();
     hole_on_surface(st, p, dir, &scope)
+}
+
+/// Whether `p` lies in the plane of a planar face of a B-rep body, inside that face's outer
+/// boundary: on the face or over an opening in it ([`solidcraft_kernel::Body::planar_face_outline_contains`]).
+fn over_planar_opening(st: &ModelState, p: Vec3) -> bool {
+    st.bodies.iter().filter(|b| !b.body.is_mesh()).any(|b| {
+        let tol = b.display_tol().max(b.body.size() * 1e-9);
+        (0..b.body.face_count()).any(|i| b.body.planar_face_outline_contains(i, p, tol))
+    })
 }
 
 /// Whether `p` lies on a face of a B-rep body, within the body's chord tolerance
