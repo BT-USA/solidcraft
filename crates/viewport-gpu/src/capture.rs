@@ -848,6 +848,18 @@ mod tests {
     /// destroyed right after the submission, after a picture that worked.
     #[test]
     fn a_device_lost_after_a_picture_is_submitted_is_an_error_not_a_panic() {
+        // Destroying a device spoils the adapter's other devices in this process (software
+        // rasterizers share state), so the loss is made in a child run of this test alone.
+        const CHILD: &str = "SOLIDCRAFT_TEST_DEVICE_LOSS_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let Ok(exe) = std::env::current_exe() else { return };
+            let name = "capture::tests::a_device_lost_after_a_picture_is_submitted_is_an_error_not_a_panic";
+            let out = std::process::Command::new(exe).env(CHILD, "1").args(["--exact", name, "--nocapture", "--test-threads=1"]).output();
+            let out = out.unwrap();
+            let said = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+            assert!(out.status.success() && said.contains("1 passed"), "{said}");
+            return;
+        }
         let capturer = match Capturer::headless(crate::test_env::policy()) {
             Ok(capturer) => capturer,
             Err(e) => {
