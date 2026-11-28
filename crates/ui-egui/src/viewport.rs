@@ -5602,13 +5602,14 @@ fn pick_hits(app: &SolveApp, proj: &Proj, pos: Pos2, options: PickOptions<'_>) -
         // Exact bodies in the interaction state already include occurrence placement. Only a
         // still-open Move preview can put the displayed solid in a further frame.
         if options.inner_faces && !b.body.is_mesh() {
-            let ray = carry(b).map_or(Some((o, d)), |motion| local_ray(&motion, o, d));
+            let motion = carry(b);
+            let ray = motion.as_ref().map_or(Some((o, d)), |m| local_ray(m, o, d));
             if let Some((origin, direction)) = ray
                 && let Ok(crossings) = b.body.face_hits_by_ray([origin.x, origin.y, origin.z], [direction.x, direction.y, direction.z])
             {
                 for crossing in crossings {
                     let t = crossing.distance;
-                    let point = o + d * t;
+                    let point = motion.as_ref().map_or(crossing.point, |m| solidcraft_kernel::affine::apply_point(m, crossing.point)).into();
                     if kept(point) {
                         let hit = Hit::Face { body: b.name.clone(), index: crossing.face, point };
                         if bestf.as_ref().is_none_or(|(depth, _)| t < *depth) {
