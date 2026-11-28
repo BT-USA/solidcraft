@@ -140,22 +140,21 @@ fn remove_one(nurb: &NurbCurve, t: f64) -> solidcore::Result<Result<(NurbCurve, 
 }
 
 /// `curve`, a clamped spline with any number of control points, with knots taken out until it has
-/// at most `cap`, and the sum of the kernel's certified bounds of each removal
-/// ([`remove_knot`]'s: each against the curve as it was before it, so by the triangle inequality
-/// the sum bounds the distance of the result from `curve` everywhere), kept within `budget`. A
-/// curve with at most `cap` points is returned as it is, bound 0.
+/// at most `cap`, and the kernel's certified distance of the result from `curve` (the largest
+/// distance between them, over the whole curve), kept within `budget`. A curve with at most `cap`
+/// points is returned as it is, bound 0.
 ///
 /// A knot is left in where the curve has a corner (a knot held as many times as the degree whose
 /// two sides meet at more than a tiny angle) and where taking it out would move the curve at one
 /// of `keep`, or at the ends of its domain, by more than rounding: those points stay where they are.
-/// Knots are taken out in rounds, from the least a removal moves to the most the budget allows,
-/// so the movement is spread over the curve.
+/// Knots are taken out greedily, the one whose removal moves the curve least first, and the
+/// result is checked against `budget` once.
 ///
 /// # Errors
 /// [`Error::Argument`] for a curve that is not a clamped spline (a rational one is refused: the
 /// kernel does not certify its bound), a `cap` the degree does not allow or the record does not
 /// hold, a `budget` that is not finite or is not positive and normal, or a `keep` not finite;
-/// [`Error::PastTolerance`] with the sum of the bounds of the removals made when `cap` is not
+/// [`Error::PastTolerance`] with the certified distance of the best result when `cap` is not
 /// reached within `budget`.
 pub fn reduce_to_points(
     curve: &Curve,
@@ -1067,7 +1066,7 @@ mod tests {
         assert_eq!(reduce_to_points(&nan, 4096, 1.0, &[]), Err(Error::Argument));
     }
 
-    /// The cap is not reached within a budget too small for it: refused with the sum of the bounds.
+    /// The cap is not reached within a budget too small for it: refused with the certified distance.
     #[test]
     fn a_budget_too_small_for_the_cap_is_refused_with_its_bound() {
         let c = chain(301, [0.0, 1.0], helix, dhelix);
