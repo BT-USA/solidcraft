@@ -1058,10 +1058,25 @@ fn c1_collect_points(
     // the surface's natural domain, where its definition evaluates as an extension, not as
     // the closed surface (0.007 off on a cylinder of radius 30 at 0.008 past its seam), and
     // the round's exact surface through such feet is off its class.
-    for (srf, count) in [SrfIndex::First, SrfIndex::Second]
+    // Not upstream (tangency-labs/solidcraft#21940): nor on a base whose seam the blend's rails
+    // never cross (`RailEndNames::InDomain`: a closed edge's Join whose side seam on that base
+    // ends inside the band). Its two rail ends lie at one vertex whose trim curve names it a
+    // period apart, so one end's foot lies across from its trim curve and the other does not,
+    // yet the contact never crosses the seam: the name a period away lay outside the domain,
+    // and the trace ran on the surface's extension (0.29972 instead of 0.3 from the ball's
+    // centre).
+    let clear_of_seam = match ops.solver().rail_end_names {
+        crate::blend::fillet_solver::p1::RailEndNames::InDomain { rail } => Some(rail),
+        crate::blend::fillet_solver::p1::RailEndNames::TrimCurveSide => None,
+    };
+    for (rail, (srf, count)) in [SrfIndex::First, SrfIndex::Second]
         .into_iter()
         .zip(named_ends)
+        .enumerate()
     {
+        if clear_of_seam == Some(rail) {
+            continue;
+        }
         let on_srf = || renamed.iter().filter(move |(_, s, _)| *s == srf);
         if on_srf().count() == count {
             continue;
@@ -4488,6 +4503,7 @@ mod tests_c6 {
     use super::*;
     use crate::blend::fillet_custom_solver::{ConstantRadiusAssistedFs, SurfaceId};
     use crate::intersect::surface_intersector::p1::IntersectionPointType;
+    use crate::math::det;
     use crate::nurbs::b_spline_surface::BSplineSurface;
 
     fn bilinear(p: [[f64; 3]; 4]) -> Surface {
@@ -4709,7 +4725,7 @@ mod tests_c6 {
         let r = run(&mut ops, &k, 1.0, &mut p, None);
         assert!(ops.guesses.len() >= 2, "{r:?} {:?}", ops.guesses);
         // how far each of the first two guesses lies from the point's uv
-        let from = |g: &[f64]| (g[0] - 0.5).hypot(g[1] - 0.25);
+        let from = |g: &[f64]| det::hypot(g[0] - 0.5, g[1] - 0.25);
         let (first, retry) = (from(&ops.guesses[0]), from(&ops.guesses[1]));
         assert!(first > 0.0 && first < 1.0e-4, "{first}");
         assert!((retry / first - 100.0).abs() < 1.0e-6, "{}", retry / first);
@@ -4741,7 +4757,7 @@ mod tests_c6 {
             let _ = run(&mut ops, k, 1.0, &mut p, previous);
             assert_eq!(p.point_type == IntersectionPointType::TangentPoint, tangent);
             let g = ops.guesses.first().expect("a finite-difference solve ran");
-            (g[0] - 0.5).hypot(g[1] - 0.25)
+            det::hypot(g[0] - 0.5, g[1] - 0.25)
         };
         let k = Kernel::default();
         let crossing = first_guess(&k, false);

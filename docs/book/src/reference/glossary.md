@@ -38,7 +38,7 @@ later pull requests, one topic at a time, each pointing at its entry here.
 A view of the timeline that draws each feature in the row of the component it changes, with one
 column for each step.
 
-- **In SolidCraft:** the 2D Timeline button in the History's header (`timeline_2d`) and the options
+- **In SolidCraft:** the chevron in the bottom History's header (`timeline_2d`) and the options
   behind its settings button (`timeline_2d_*`); its two parts are the *modeling track* and the *assembly track*.
 - **Don't use:** 2D history, matrix timeline.
 - **Elsewhere:** multi-track timeline.
@@ -129,6 +129,19 @@ chart often gives it for a 90° bend. Compare *bend allowance*.
   Rules › Unfold › Bend Deduction), with the 90° value in `unfold_value`.
 - **Elsewhere:** BD.
 - **For translators:** a length taken off the flat blank, not a tax or a logical deduction.
+
+### bend offset
+
+The distance an edge flange's bend is moved out past where its bend position starts it.
+
+The panel the flange stands on grows by the strip between, and so does the flat. A negative bend
+offset moves the bend in.
+
+- **In SolidCraft:** the Flange dialog's Bend Offset; `sheet.flange`'s `offset` and the edge
+  flange feature's `offset` key.
+- **Don't use:** flange offset, bend shift.
+- **Elsewhere:** offset (of a flange position).
+- **For translators:** not an offset plane, not the Combine offset, and not a sketch offset.
 
 ### bill of materials
 
@@ -477,6 +490,14 @@ a new row takes the next number at its level. A row listed under another reads a
 - **Don't use:** position, balloon number, find number; index.
 - **Elsewhere:** item number, item, find number, balloon number.
 - **For translators:** a label, not a quantity or a count; not a part number.
+
+### key parameter
+
+A named value marked with a star for frequent changes.
+
+- **In SolidCraft:** `parameters.favorite`; the Key parameters band and its compact fields and sliders.
+- **Don't use:** favourites as the name of a separate, duplicated list.
+- **For translators:** a frequently changed input, not a keyboard key or a database key.
 
 ### keyboard profile
 
@@ -834,6 +855,22 @@ to each other keep a quarter, three an eighth. A section has at most six.
 - **For translators:** a view-only cut that changes no geometry, not a Split Body or a Plane
   feature.
 
+### section stack
+
+A row of parallel planes through a mesh body, each with a sketch of the curves fitted to the
+mesh's section there, and optionally the slabs extruded between them.
+
+The planes run along one plane's normal at a set spacing; a plane that misses the mesh gets no
+sketch. The sketches and slabs are ordinary features in one timeline folder.
+
+- **In SolidCraft:** `mesh.section_stack` (`body`, `plane`, `from`, `to`, `spacing`,
+  `max_sections`, `extrude`, `name`); the Section Stack button under SURFACE › Convert.
+- **Don't use:** slice stack, X-ray (for the command), section sketch.
+- **Elsewhere:** mesh slicing, cross-section stack.
+- **For translators:** "section" is a cut through a mesh body that makes sketch geometry, not
+  a section plane of Section Analysis, which only changes the view; "slabs" are the solid layers
+  extruded between the planes.
+
 ### settings profile
 
 A named set of input and interface preferences that can be switched, exported and imported as
@@ -1071,6 +1108,12 @@ share a catalogue entry. Each meaning below gets its own term and, in time, its 
 Some translations show the clash today: Japanese and Chinese show a hole's flat bottom with the
 word for "unfold" or "plane", Chinese shows "Round" as "fillet", and Chinese and Russian show the
 Normal line type as "normal vector".
+
+## Weld graphic
+
+A saved record of a weld's manufacturing settings and optional manual symbol.
+It is separate from timeline features and bodies; creating it does not add a
+solid bead or change mass properties.
 
 ## Mounting plate
 

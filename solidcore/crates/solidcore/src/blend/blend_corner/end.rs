@@ -70,6 +70,7 @@ use crate::geom::global_solver::SolverOperation;
 use crate::geom::tol::zone_tol3d;
 use crate::intersect::point_class::{PointClassType, PointClassification};
 use crate::kernel::Kernel;
+use crate::math::det;
 use crate::math::{rad_to_deg, Point3, Vec3, BIG_DOUBLE, EFF_ZERO, PI};
 use crate::nurbs::knots::Side;
 use crate::query::brep::{BrepFaceServices, FaceCaches};
@@ -386,7 +387,7 @@ pub fn continuing_edges(
         let [leave0, leave1] = leave;
         if along_its_face
             && leaves
-            && leave0.dot(leave1) < -(tan_tol_deg * (PI / 180.0)).cos()
+            && leave0.dot(leave1) < -det::cos(tan_tol_deg * (PI / 180.0))
             && same_convexity_edges_round_vertex(k, target, fil_eu, other)?
             && !(run_out && run_on_leaves_the_part(k, target, vertex, fil_eu, eu, leave0)?)
         {
@@ -2407,7 +2408,10 @@ fn classify_rail_end(
 ///
 /// # Errors
 /// `SM_ERR_NULL_POINTER` without cap, edge, face, vertex, solver or curve; `SM_ERR` for an
-/// unprocessed vertex; those of the classification and the intersection.
+/// unprocessed vertex; those of the classification, of the cap edge's heading
+/// ([`cap_edge_heading`]) and of the intersection, among them
+/// [`BlendFailure::SrfSrfHeadingNotFollowed`] where no curve leaves the vertex on the
+/// heading's side.
 fn calc_end_cap_edges(
     k: &Kernel,
     target: &mut Brep,
@@ -2482,28 +2486,125 @@ fn calc_end_cap_edges(
         }
         let start_pt = pseudo.vertex_point(start)?;
         let end_pt = pseudo.vertex_point(end)?;
-        let mut dir = end_pt - start_pt;
         let surface = crate::topology::face::p2::surface(target, face)?
             .ok_or_else(|| face_without_surface(OP, face))?
             .clone_for_evaluation()?;
-        let curves = srf_srf_intersection(
-            k,
-            Some(start_pt),
-            Some(end_pt),
-            Some(&mut dir),
-            None,
-            &surface,
-            cap,
-            corner.approx_tol_3d,
-            corner.tangency_tol_radians,
-            SrfSrfOptions::default(),
-        )?;
-        let curve = curves.curve_3d.ok_or_else(|| {
+        // Not the fork's (tangency-labs/solidcraft#21941): the cap's edge is the curve that
+        // leaves the vertex into the side face ([`cap_edge_heading`]), not the chord's span,
+        // which on a closed curve runs the long way round from a vertex at its closure.
+        let vertex_at_start = rail_end == end;
+        let heading = cap_edge_heading(k, target, pseudo, corner, solvers, face, cap)?;
+        let curve = if let Some(mut heading) = heading {
+            let (from, to) = if vertex_at_start {
+                (start_pt, end_pt)
+            } else {
+                (end_pt, start_pt)
+            };
+            let mut curve = srf_srf_intersection(
+                k,
+                Some(from),
+                Some(to),
+                Some(&mut heading),
+                None,
+                &surface,
+                cap,
+                corner.approx_tol_3d,
+                corner.tangency_tol_radians,
+                SrfSrfOptions {
+                    closed_by_start_direction: true,
+                    heading_side_only: true,
+                    ..SrfSrfOptions::default()
+                },
+            )?
+            .curve_3d;
+            if !vertex_at_start {
+                if let Some(c) = curve.as_mut() {
+                    let span = c.natural_interval();
+                    let _ = c.reverse_parameterization(k, &span)?;
+                }
+            }
+            curve
+        } else {
+            let mut dir = end_pt - start_pt;
+            srf_srf_intersection(
+                k,
+                Some(start_pt),
+                Some(end_pt),
+                Some(&mut dir),
+                None,
+                &surface,
+                cap,
+                corner.approx_tol_3d,
+                corner.tangency_tol_radians,
+                SrfSrfOptions::default(),
+            )?
+            .curve_3d
+        };
+        let curve = curve.ok_or_else(|| {
             unbuildable_with(OP, CornerStep::EndSideFaceMissesCap, SM_ERR_NULL_POINTER)
         })?;
         set_edge_curve(pseudo.brep_mut(), fe, Some(curve))?;
     }
     Ok(None)
+}
+
+/// Not the fork's (tangency-labs/solidcraft#21941): the direction an End's cap edge on the side
+/// face `face` (F) leaves the corner's vertex, where F meets the cap's plane: square to F's
+/// normal and to the plane's there, turned into F (along the blended edge use's binormal on
+/// F, which points into the face). The cap's edge on F is the curve from the vertex to the
+/// rail's end that leaves this way: where F meets the plane in a closed curve (a sphere's
+/// equator), the span between the parameters the two points drop to runs the long way round
+/// from a vertex at the curve's closure (on the sphere's seam), out of F, and left the strip
+/// the round takes off F open ("the trim leaks"). `None` where the direction is not defined: a
+/// cap that is not a plane, a blended edge with no use on F, or F tangent to the plane at the
+/// vertex; the chord is used there, as the fork does.
+///
+/// # Errors
+/// Those of the corner's vertex, rib, solver and blended edge use lookups (no vertex given, a
+/// solver missing its edge use); those of the topology queries and of the binormal at the
+/// vertex.
+fn cap_edge_heading(
+    k: &Kernel,
+    target: &mut Brep,
+    pseudo: &FilletBrep,
+    corner: &FilletCorner,
+    solvers: &dyn SweptSolvers,
+    face: FaceId,
+    cap: &crate::surface::surface::Surface,
+) -> Result<Option<Vec3>> {
+    use crate::topology::edgeuse::p3::{evaluate_binormal, BinormalOptions};
+    let crate::surface::surface::p2::SurfaceKind::Plane(plane) = cap.kind() else {
+        return Ok(None);
+    };
+    let vertex = corner_vertex(corner)?;
+    let rib = first_edge(corner)?;
+    let fs = solvers.solver(rib_solver(pseudo, rib)?)?;
+    let fil_eu = solver_edgeuse(fs, 0)?;
+    let eu = if face_of(target, fil_eu)? == face {
+        fil_eu
+    } else {
+        match eu1::radial(target, fil_eu)? {
+            Some(radial) if face_of(target, radial)? == face => radial,
+            _ => return Ok(None),
+        }
+    };
+    let blended = edge_of(target, eu)?;
+    let ivl = edge::interval(target, blended)?;
+    let at = if edge::start_vertex(target, blended)? == Some(vertex) {
+        ivl.min()
+    } else {
+        ivl.max()
+    };
+    let into = evaluate_binormal(k, target, eu, at, true, &BinormalOptions::default())?;
+    let along = into.face_normal.cross(plane.evaluate_normal());
+    let Ok(along) = along.unitize() else {
+        return Ok(None);
+    };
+    Ok(Some(if along.dot(into.binormal) < 0.0 {
+        -along
+    } else {
+        along
+    }))
 }
 
 /// Whether the blended edge's face `face` (F) ends at `vertex` in an edge T tangent to
@@ -3228,12 +3329,12 @@ mod tests {
         ));
         let t = 60.0_f64.to_radians();
         let theta = t + 1e-5;
-        let a = 2.0 * theta.cos() + 1.0;
+        let a = 2.0 * det::cos(theta) + 1.0;
         let g = Surface::from(Plane::from_normal(
             Point3::new(a, 0.0, 0.0),
             Vec3::new(1.0, 0.0, 0.0),
         ));
-        let want = Point3::new(3.0 * theta.cos(), 3.0 * theta.sin(), 0.0);
+        let want = Point3::new(3.0 * det::cos(theta), 3.0 * det::sin(theta), 0.0);
         // the centre lies inside F: against F's normal where it points out
         let domain = f.natural_uv_domain_with_nurb(&k).unwrap();
         let foot = f
@@ -3245,12 +3346,13 @@ mod tests {
         let f_offset = if n.dot(want) > 0.0 { -1.0 } else { 1.0 };
         // the trace's rail end: on T's near side, 2e-5 off F's surface
         let near = t - 0.5e-5;
-        let start = Point3::new(3.0 * near.cos(), 3.0 * near.sin(), 0.0) * (1.0 + 2e-5 / 3.0);
+        let start =
+            Point3::new(3.0 * det::cos(near), 3.0 * det::sin(near), 0.0) * (1.0 + 2e-5 / 3.0);
         assert!(start.distance(want) < 4e-5 * 2.0);
         // a near miss: the rail end's foot on F lies inside T by more than F's zone, so a
         // foot taken at the rail's tolerance would call it on F
         let zone = 1e-5;
-        let inside = 3.0 * (t - start.y.atan2(start.x));
+        let inside = 3.0 * (t - det::atan2(start.y, start.x));
         assert!(inside > zone, "{inside}");
         // the centre lies on G's negative side (x < a): G's signed offset is -1
         let solve = |g_offset: f64| {
@@ -3270,7 +3372,7 @@ mod tests {
         let got = solve(-1.0).unwrap();
         assert!(got.distance(want) <= 1e-9, "{got:?} against {want:?}");
         // past T, by more than F's zone, along F
-        let past = 3.0 * (got.y.atan2(got.x) - t);
+        let past = 3.0 * (det::atan2(got.y, got.x) - t);
         assert!(past > 2e-5, "{past}");
         // the offset is signed: a ball on G's other side (x > a) would need its centre at
         // radius 2 with x = a + 1 > 2, which no point of F gives, so nothing is solved
@@ -3283,8 +3385,8 @@ mod tests {
     /// and `x^2 / (2 R cos^3 b)` to second, the arc `-x^2 / (2 rho)`.
     fn circle_over_arc(big: f64, rho: f64, b: f64) -> (f64, f64) {
         (
-            -b.tan(),
-            1.0 / (2.0 * big * b.cos().powi(3)) + 1.0 / (2.0 * rho),
+            -det::tan(b),
+            1.0 / (2.0 * big * det::powi(det::cos(b), 3)) + 1.0 / (2.0 * rho),
         )
     }
 
@@ -3305,7 +3407,7 @@ mod tests {
         let (first, second) = circle_over_arc(55.0, 49.0, b);
         let depth = depth_under_edge_continued(first, second, 33.9);
         assert!((depth - first * first / (4.0 * second)).abs() < 1e-15);
-        let apart = (55.0_f64 * 55.0 + 49.0 * 49.0 + 2.0 * 55.0 * 49.0 * b.cos()).sqrt();
+        let apart = (55.0_f64 * 55.0 + 49.0 * 49.0 + 2.0 * 55.0 * 49.0 * det::cos(b)).sqrt();
         assert!((depth - (55.0 + 49.0 - apart)).abs() < 2e-4, "{depth}");
     }
 
@@ -3329,7 +3431,7 @@ mod tests {
         let mut b = 0.0_f64;
         for _ in 0..4 {
             let (_, second) = circle_over_arc(55.0, 49.0, b);
-            b = (2.0 * (second * tol).sqrt()).atan();
+            b = det::atan(2.0 * (second * tol).sqrt());
         }
         // about 0.05 degrees
         assert!((b.to_degrees() - 0.0503).abs() < 1e-3, "{}", b.to_degrees());
