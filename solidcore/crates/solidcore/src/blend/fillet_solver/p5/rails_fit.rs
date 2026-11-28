@@ -8,9 +8,10 @@
 //! Deviations: a run of off-face intervals between two stretches on the face is skipped
 //! when it both leaves and returns on or beyond the cross section at the same end of the
 //! filleted edge (#1580; a run past one end and back past the other, round the far side
-//! of a closed rail, is judged, #2175, where a stretch of it lies in span: one with none,
-//! the extension past an end across the short gap to the other end of an edge that runs
-//! nearly all round a closed loop, lies wholly past the ends, SolidCraft #19684);
+//! of a closed rail, is judged, #2175, unless it crosses the face's one side edge that joins
+//! both ends both ways and no stretch of it lies in span: the extension past an end across
+//! the short gap to the other end of an edge that runs nearly all round a closed loop lies
+//! in the end face between the ends, SolidCraft #19684);
 //! `518566f` tries [`leaves_past_an_end`] only for
 //! the first and last runs and refuses such a round. Such a run's leave (or return) is
 //! also past an end where it crosses the face's side edge at that end heading out past it
@@ -1164,18 +1165,26 @@ impl FilletSolver {
                         {
                             continue;
                         }
-                        // A run that leaves past one end and comes back past the other with no
-                        // stretch in span (where the edge point nearest the rail is not an end)
-                        // lies wholly past the ends, which trim it, as a closed rail's run does
-                        // (#17646): the extension past an end of an edge whose ends are near
-                        // each other on a closed loop (a notch across its seam, the loop's
-                        // other edge the side edge at both ends) crosses the gap between them
-                        // and comes back onto its face beyond the other end (SolidCraft
-                        // #19684).
+                        // A run that leaves past one end and comes back past the other across
+                        // the face's one side edge that joins both ends (a loop of the filleted
+                        // edge and one other: a notch across a closed outline's seam), with no
+                        // stretch in span (where the edge point nearest the rail is not an end),
+                        // lies in the end face between the ends, which the corners there trim,
+                        // as a closed rail's run wholly past its ends is (#17646): the extension
+                        // past one end crosses the short gap to the other and comes back onto
+                        // its face just beyond it (SolidCraft #19684). A run past an end only by
+                        // its cross section has run on along the face past the other end, where
+                        // the next edge of the loop is, and is judged.
                         if back.is_some() {
+                            let fil_edge = filleted_edge(solver.solver(), target)?;
+                            let both_ends = |at: &PointClassification<FilletClassObject>| {
+                                side_edge_ends(target, fil_edge, face, at).map(|e| e.len() == 2)
+                            };
                             let run = [Extent1d::from_min_max(d_leave, d_back)];
-                            if in_span_stretches(solver.solver(), k, target, &curve, &run)?
-                                .is_empty()
+                            if both_ends(leave)?
+                                && both_ends(&last.end)?
+                                && in_span_stretches(solver.solver(), k, target, &curve, &run)?
+                                    .is_empty()
                             {
                                 continue;
                             }
