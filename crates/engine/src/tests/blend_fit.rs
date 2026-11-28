@@ -168,7 +168,10 @@ fn shallow_ellipse_boss_round_builds_at_and_below_its_height() {
 fn shallow_circle_boss_refuses_a_round_above_its_height() {
     let mut s = shallow_boss_on_plate("sketch.circle.center", json!({"center": [0, 0], "radius": 4}));
     let error = s.execute("solid.fillet", &json!({"edges": [[4, 0, 2]], "radius": 0.6, "tangent_chain": true})).unwrap_err().to_string();
-    assert_shallow_boss_fillet_refusal(&error);
+    // A circular boss already refused through the rail-misses-edge fit, which keeps a margin of
+    // a thousand edge tolerances below the 0.3 mm height, so it names 0.29 mm.
+    assert!(error.contains("the largest radius that fits is 0.29 mm"), "{error}");
+    assert!(!error.contains("SMLib"), "{error}");
 }
 
 #[test]
