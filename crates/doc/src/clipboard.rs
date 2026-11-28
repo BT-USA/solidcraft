@@ -474,7 +474,7 @@ impl crate::Feature {
         }
         self.kind.remap_bodies(bodies);
         if let K::Revolve { to: Some(crate::RevolveTo::Plane(plane)), .. } = &mut self.kind {
-            remap_plane(plane, ids, bodies, 0, occurrences, doc)?;
+            remap_plane(plane, ids, bodies, 0, placements)?;
         }
         match &mut self.kind {
             K::Sketch { plane, sketch } => {
