@@ -164,7 +164,7 @@ pub fn run(
     let failed_in_create = failed.clone();
     let wake = wake.clone();
     let ran = runner::run(run_options, move |created: Created| {
-        let Created { ctx, render_state, waker } = created;
+        let Created { ctx, render_state, waker, window } = created;
         wake.set(move || waker.run_logic());
         if let Some(memory) = settings.kv.get(EGUI_MEMORY).and_then(|m| ron::from_str::<egui::Memory>(m).ok()) {
             ctx.memory_mut(|m| *m = memory);
@@ -177,7 +177,11 @@ pub fn run(
         let mut frame = eframe::Frame::_new_kittest();
         frame.wgpu_render_state = render_state;
         match made {
-            Ok(app) => Box::new(OnRunner { app, frame, settings, ctx, persist_window }),
+            Ok(mut app) => {
+                // eframe's `Frame` has no window here; the app takes the native handle from ours.
+                app.native_window = window;
+                Box::new(OnRunner { app, frame, settings, ctx, persist_window })
+            }
             Err(e) => {
                 *failed_in_create.borrow_mut() = Some(e.to_string());
                 Box::new(Closing)

@@ -62,9 +62,9 @@ use solidcraft_ui_egui::{Services, SolveApp};
 /// Windows: put the restored window back inside the monitor's work area if it is out of reach
 /// (a gone monitor, another scale, a taskbar edge). Sizes are in points, the work area in pixels.
 #[cfg(target_os = "windows")]
-fn fit_window_to_work_area(ctx: &egui::Context, frame: &eframe::Frame) {
+fn fit_window_to_work_area(ctx: &egui::Context, window: &dyn raw_window_handle::HasWindowHandle) {
     use window_fit::Area;
-    let Some((x, y, w, h)) = native_frame::work_area(frame) else { return };
+    let Some((x, y, w, h)) = native_frame::work_area(window) else { return };
     let (outer, inner, scale, maximized) = ctx.input(|i| {
         let v = i.viewport();
         (v.outer_rect, v.inner_rect, v.native_pixels_per_point, v.maximized.unwrap_or(false) || v.fullscreen.unwrap_or(false))
@@ -123,6 +123,8 @@ struct App {
     take_focus_unwanted: bool,
     /// Coming forward after a close that asks about unsaved designs.
     come_forward: come_forward::ComeForward,
+    /// The main window when our own runner runs it (`own_runner`); eframe's `Frame` has it otherwise.
+    native_window: Option<std::sync::Arc<winit::window::Window>>,
     /// The graphics device: lost, it can't draw again (`App::watch_device`, #4172).
     gpu: Option<LostWatch>,
     /// The designs whose unsaved changes closing couldn't keep for recovery
@@ -322,7 +324,12 @@ impl eframe::App for App {
                 self.come_forward.start(std::time::Instant::now());
             }
         }
-        self.come_forward.tick(ctx, _frame);
+        // The field, not `window_handle`: `come_forward` is borrowed mutably beside it.
+        let window: &dyn raw_window_handle::HasWindowHandle = match &self.native_window {
+            Some(window) => window.as_ref(),
+            None => &*_frame,
+        };
+        self.come_forward.tick(ctx, window);
         #[cfg(target_os = "macos")]
         for f in if self.solve.file_picker_busy() { Vec::new() } else { open_documents::take() } {
             self.solve.open_chosen_file(&f);
@@ -437,7 +444,12 @@ impl eframe::App for App {
             // Before the window is shown: its title bar must be within reach (window_fit.rs).
             #[cfg(target_os = "windows")]
             if self.window_frames == 1 {
-                fit_window_to_work_area(ctx, frame);
+                // eframe's `Frame`, or our own runner's window, whose `Frame` has none.
+                let window: &dyn raw_window_handle::HasWindowHandle = match &self.native_window {
+                    Some(window) => window.as_ref(),
+                    None => &*frame,
+                };
+                fit_window_to_work_area(ctx, window);
             }
             mark(if self.window_frames == 1 { "first frame begins" } else { "second frame begins (first presented)" });
             ctx.request_repaint();
@@ -2239,6 +2251,7 @@ fn main() -> eframe::Result {
             up: false,
             take_focus_unwanted: control_port.is_some(),
             come_forward: come_forward::ComeForward::default(),
+            native_window: None,
             gpu,
             unkept: Vec::new(),
             #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]

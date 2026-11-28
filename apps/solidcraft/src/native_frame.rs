@@ -74,7 +74,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::SetClassLongW as SetClassLongPt
 
 /// The work area (the monitor without the taskbar) of the monitor nearest the window, in physical
 /// pixels: left, top, width, height.
-pub fn work_area(window: &impl HasWindowHandle) -> Option<(i32, i32, i32, i32)> {
+pub fn work_area(window: &dyn HasWindowHandle) -> Option<(i32, i32, i32, i32)> {
     let handle = window.window_handle().ok()?;
     let RawWindowHandle::Win32(w) = handle.as_raw() else { return None };
     let hwnd = w.hwnd.get() as HWND;
