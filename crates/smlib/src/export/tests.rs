@@ -795,3 +795,163 @@ mod spline_point_tests {
         }
     }
 }
+
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)] // test fixtures
+mod long_spline_tests {
+    use super::*;
+
+    /// A clamped cubic spline through `m` samples of a helix over `[t0, t1]`, as a chain of cubic
+    /// Beziers (knots of multiplicity 3), the way a fine trace is held.
+    fn helix_chain(m: usize, [t0, t1]: [f64; 2]) -> b::Curve {
+        let w = 6.0 * std::f64::consts::PI;
+        let at = |t: f64| {
+            let u = (t - t0) / (t1 - t0);
+            (
+                [3.0 * (w * u).cos(), 3.0 * (w * u).sin(), 20.0 * u],
+                [-3.0 * w * (w * u).sin() / (t1 - t0), 3.0 * w * (w * u).cos() / (t1 - t0), 20.0 / (t1 - t0)],
+            )
+        };
+        let h = (t1 - t0) / (m - 1) as f64;
+        let mut knots = vec![t0; 4];
+        let mut points = Vec::new();
+        for k in 0..m - 1 {
+            let (a, z) = (t0 + k as f64 * h, t0 + (k + 1) as f64 * h);
+            let ((p0, d0), (p1, d1)) = (at(a), at(z));
+            if k == 0 {
+                points.push(p0);
+            }
+            points.push([0, 1, 2].map(|c| p0[c] + d0[c] * h / 3.0));
+            points.push([0, 1, 2].map(|c| p1[c] - d1[c] * h / 3.0));
+            points.push(p1);
+            if k + 1 < m - 1 {
+                knots.extend([z; 3]);
+            }
+        }
+        knots.extend([t1; 4]);
+        b::Curve::Spline { knots, points }
+    }
+
+    fn count(c: &b::Curve) -> usize {
+        match c {
+            b::Curve::Spline { points, .. } => points.len(),
+            b::Curve::RationalSpline { homogeneous, .. } => homogeneous.len(),
+            _ => 0,
+        }
+    }
+
+    fn point(c: &b::Curve, t: f64) -> [f64; 3] {
+        point3(c, t).unwrap()
+    }
+
+    fn gap(a: &b::Curve, z: &b::Curve, [t0, t1]: [f64; 2]) -> f64 {
+        (0..=2000)
+            .map(|i| {
+                let t = t0 + (t1 - t0) * f64::from(i) / 2000.0;
+                let (p, q) = (point(a, t), point(z, t));
+                (0..3).map(|c| (p[c] - q[c]).powi(2)).sum::<f64>().sqrt()
+            })
+            .fold(0.0, f64::max)
+    }
+
+    /// A trace of 4201 points comes down to the record's 4096, within the budget it is given, by the
+    /// bound solidcore proves; the bound is what an edge's tolerance grows by.
+    #[test]
+    fn a_trace_over_the_cap_comes_down_to_it_within_its_budget() {
+        let curve = helix_chain(1401, [0.0, 1.0]);
+        assert_eq!(count(&curve), 4201);
+        let budget = 2e-3;
+        let r = long_spline::within_cap(curve.clone(), None, [0.0, 1.0], budget).unwrap();
+        assert!(count(&r.curve) <= long_spline::MAX_POINTS && r.nurbs.is_none());
+        assert!(r.bound > 0.0 && r.bound <= budget, "bound {} budget {budget}", r.bound);
+        assert!(gap(&curve, &r.curve, [0.0, 1.0]) <= r.bound);
+        assert!(b::check_curve(&r.curve, &mut b::Budget::input()).is_ok());
+    }
+
+    /// An edge on a strict part of its spline's knots keeps the points at the ends of that part, so
+    /// they stay within the vertices' tolerance.
+    #[test]
+    fn the_ends_of_a_trimmed_edge_do_not_move() {
+        let curve = helix_chain(1401, [-0.2, 1.2]);
+        let r = long_spline::within_cap(curve.clone(), None, [0.0, 1.0], 4e-3).unwrap();
+        assert!(count(&r.curve) <= long_spline::MAX_POINTS);
+        for t in [-0.2, 0.0, 1.0, 1.2] {
+            let (p, q) = (point(&curve, t), point(&r.curve, t));
+            let moved = (0..3).map(|c| (p[c] - q[c]).powi(2)).sum::<f64>().sqrt();
+            assert!(moved < 1e-11, "at {t}: {moved}");
+        }
+    }
+
+    /// A budget that is not a usable number is refused, at once.
+    #[test]
+    fn a_budget_that_is_not_a_usable_number_is_refused() {
+        let curve = helix_chain(1401, [0.0, 1.0]);
+        for budget in [f64::NAN, f64::INFINITY, 0.0, -1.0, 1e-322] {
+            assert!(long_spline::within_cap(curve.clone(), None, [0.0, 1.0], budget).is_err(), "{budget}");
+        }
+        // the budget too small to reach the cap with is refused with its reason
+        let e = long_spline::within_cap(helix_chain(1401, [0.0, 1.0]), None, [0.0, 1.0], 1e-300).err().unwrap();
+        assert!(e.to_string().contains("cannot be reduced"), "{e}");
+    }
+
+    /// A corner of the trace is kept, and a trace within the cap is left as it is.
+    #[test]
+    fn a_trace_within_the_cap_is_left_alone() {
+        let curve = helix_chain(100, [0.0, 1.0]);
+        let r = long_spline::within_cap(curve.clone(), None, [0.0, 1.0], 1e-3).unwrap();
+        assert_eq!((r.curve, r.bound), (curve, 0.0));
+    }
+
+    /// A rational spline over the cap is refused with the reason, whether it is the edge's curve or
+    /// the NURBS form of its circle or ellipse: not left for the record's check to fail it.
+    #[test]
+    fn a_rational_spline_over_the_cap_is_refused_with_its_reason() {
+        let n = long_spline::MAX_POINTS + 5;
+        let rational = b::Curve::RationalSpline {
+            knots: [vec![0.0; 2], (1..n - 1).map(|i| i as f64).collect(), vec![n as f64 - 1.0; 2]].concat(),
+            homogeneous: (0..n).map(|i| [i as f64, 0.0, 0.0, 1.0]).collect(),
+        };
+        let circle = b::Curve::Circle { frame: b::Frame { origin: [0.0; 3], x_axis: [1.0, 0.0, 0.0], y_axis: [0.0, 1.0, 0.0] }, radius: 5.0 };
+        for (curve, nurbs) in [(rational.clone(), None), (circle.clone(), Some(rational.clone()))] {
+            let e = long_spline::within_cap(curve, nurbs, [0.0, 1.0], 1e-3).err().unwrap();
+            assert!(matches!(e, ExportError::Unsupported(_)) && e.to_string().contains("rational"), "{e}");
+        }
+    }
+
+    /// The NURBS form of a circle or ellipse over the cap is brought down with the edge's curve,
+    /// and the edge's tolerance grows by the larger of the two bounds.
+    #[test]
+    fn the_nurbs_form_of_a_circle_over_the_cap_is_reduced_too() {
+        let form = helix_chain(1401, [0.0, 1.0]);
+        let circle = b::Curve::Circle { frame: b::Frame { origin: [0.0; 3], x_axis: [1.0, 0.0, 0.0], y_axis: [0.0, 1.0, 0.0] }, radius: 5.0 };
+        let r = long_spline::within_cap(circle.clone(), Some(form.clone()), [0.0, 1.0], 2e-3).unwrap();
+        assert_eq!(r.curve, circle);
+        let reduced = r.nurbs.unwrap();
+        assert!(count(&reduced) <= long_spline::MAX_POINTS);
+        assert!(r.bound > 0.0 && gap(&form, &reduced, [0.0, 1.0]) <= r.bound);
+    }
+
+    /// An edge reduced to within a bound is carried past the face's tolerance by that bound: the
+    /// outer loop's pcurves and the edge-lookup check accept what the edge's grown tolerance does.
+    #[test]
+    fn a_reduced_edge_is_checked_against_its_grown_tolerance_on_every_path() {
+        // A square loop one hundredth above the plane z = 0, a degree-1 closed spline.
+        let off = 0.008;
+        let corners = [[0.0, 0.0, off], [1.0, 0.0, off], [1.0, 1.0, off], [0.0, 1.0, off], [0.0, 0.0, off]];
+        let curve = b::Curve::Spline { knots: vec![0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 4.0], points: corners.to_vec() };
+        let plane = b::Surface::Plane { origin: [0.0; 3], u_axis: [1.0, 0.0, 0.0], v_axis: [0.0, 1.0, 0.0] };
+        let face = Face {
+            nurbs: None,
+            surface: plane,
+            domain: [[-10.0, 10.0], [-10.0, 10.0]],
+            agrees: true,
+            loops: vec![Loop::Edges(vec![(0, true)])],
+            records: vec![vec![0]],
+            given: vec![vec![None]],
+        };
+        let edge =
+            |grown: f64| Edge { curve: curve.clone(), nurbs: None, interval: [0.0, 4.0], vertices: [0, 0], reversed: false, trim_map: None, grown };
+        // 0.008 off the plane is past half of 0.01, within half of 0.02
+        assert!(outer_pcurves(&face, &[(0, true)], &[edge(0.0)], 0.01).is_err());
+        assert!(outer_pcurves(&face, &[(0, true)], &[edge(0.01)], 0.01).is_ok());
+    }
+}

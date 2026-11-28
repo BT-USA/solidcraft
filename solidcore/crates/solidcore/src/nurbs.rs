@@ -24,6 +24,7 @@ pub mod crv_geom;
 pub mod crv_nurb;
 pub mod crv_offset;
 pub mod crv_proportion;
+pub mod crv_reduce;
 pub mod crv_tool;
 pub(crate) mod fit_arrays;
 pub mod funcs_adv;

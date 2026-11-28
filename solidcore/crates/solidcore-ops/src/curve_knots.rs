@@ -13,6 +13,7 @@
 use solidcore::error::nurbs::NurbsFailure;
 use solidcore::nurbs::crv_basic::Curve as NurbCurve;
 use solidcore::nurbs::crv_deviation::certified_distance;
+use solidcore::nurbs::crv_reduce::reduce_to_points as reduce_to_points_of;
 use solidcore::nurbs::math::{CPoint, NOW};
 use solidcore_record::brep::{check_curve, Budget, Curve, Natural, MAX_SPLINE_DEGREE};
 
@@ -116,13 +117,104 @@ pub fn remove_knot(curve: &Curve, t: f64, tol: f64) -> Result<(Curve, f64)> {
         return Err(Error::Argument);
     }
     run("curve_knots::remove_knot", |_| {
-        // removed whatever it moves; the certified bound decides
-        let removal = nurb.remove_knot(t, 1, f64::MAX)?;
-        if removal.removed == 0 {
-            return Ok(Err(Error::NoEffect));
-        }
-        within(&nurb, &removal.curve, tol)
+        Ok(remove_one(&nurb, t)?.and_then(|(c, bound)| {
+            if bound <= tol {
+                record_of(&c).map(|c| (c, bound))
+            } else {
+                Err(Error::PastTolerance { bound })
+            }
+        }))
     })?
+}
+
+/// `nurb` with one copy of its interior knot `t` removed, whatever it moves, and the kernel's
+/// certified bound of the move ([`certified_distance`] against `nurb` as it is); [`Error::NoEffect`]
+/// when the kernel removes nothing.
+fn remove_one(nurb: &NurbCurve, t: f64) -> solidcore::Result<Result<(NurbCurve, f64)>> {
+    let removal = nurb.remove_knot(t, 1, f64::MAX)?;
+    if removal.removed == 0 {
+        return Ok(Err(Error::NoEffect));
+    }
+    let bound = certified_distance(nurb, &removal.curve)?;
+    Ok(Ok((removal.curve, bound)))
+}
+
+/// `curve`, a clamped spline with any number of control points, with knots taken out until it has
+/// at most `cap`, and the sum of the kernel's certified bounds of each removal
+/// ([`remove_knot`]'s: each against the curve as it was before it, so by the triangle inequality
+/// the sum bounds the distance of the result from `curve` everywhere), kept within `budget`. A
+/// curve with at most `cap` points is returned as it is, bound 0.
+///
+/// A knot is left in where the curve has a corner (a knot held as many times as the degree whose
+/// two sides meet at more than a tiny angle) and where taking it out would move the curve at one
+/// of `keep`, or at the ends of its domain, by more than rounding: those points stay where they are.
+/// Knots are taken out in rounds, from the least a removal moves to the most the budget allows,
+/// so the movement is spread over the curve.
+///
+/// # Errors
+/// [`Error::Argument`] for a curve that is not a clamped spline (a rational one is refused: the
+/// kernel does not certify its bound), a `cap` the degree does not allow or the record does not
+/// hold, a `budget` that is not finite or is not positive and normal, or a `keep` not finite;
+/// [`Error::PastTolerance`] with the sum of the bounds of the removals made when `cap` is not
+/// reached within `budget`.
+pub fn reduce_to_points(
+    curve: &Curve,
+    cap: usize,
+    budget: f64,
+    keep: &[f64],
+) -> Result<(Curve, f64)> {
+    let Curve::Spline { knots, points } = curve else {
+        return Err(Error::Argument);
+    };
+    if !budget.is_finite() || budget < f64::MIN_POSITIVE || !keep.iter().all(|t| t.is_finite()) {
+        return Err(Error::Argument);
+    }
+    let nurb = long_nurb_of(knots, points)?;
+    if cap > 4096 || cap <= nurb.degree() {
+        return Err(Error::Argument);
+    }
+    if nurb.cpts().len() <= cap {
+        return Ok((curve.clone(), 0.0));
+    }
+    run("curve_knots::reduce_to_points", |_| {
+        let done = reduce_to_points_of(nurb, cap, budget, keep);
+        Ok(if done.reached {
+            record_of(&done.curve).map(|c| (c, done.bound))
+        } else {
+            Err(Error::PastTolerance { bound: done.bound })
+        })
+    })?
+}
+
+/// The kernel's curve of a clamped spline of any size, valid as the record takes a spline but for
+/// the number of its control points.
+fn long_nurb_of(knots: &[f64], points: &[[f64; 3]]) -> Result<NurbCurve> {
+    let degree = knots
+        .len()
+        .checked_sub(points.len() + 1)
+        .ok_or(Error::Argument)?;
+    let n = points.len();
+    let flat =
+        |ends: Option<&[f64]>| ends.is_some_and(|e| e.windows(2).all(|w| w.first() == w.get(1)));
+    let valid = (1..=MAX_SPLINE_DEGREE).contains(&degree)
+        && n > degree
+        && knots.iter().all(|k| k.is_finite())
+        && knots.windows(2).all(|w| w.first() <= w.get(1))
+        && points
+            .iter()
+            .flatten()
+            .all(|x| x.is_finite() && x.abs() <= 1e12)
+        && flat(knots.get(..=degree))
+        && flat(knots.get(n..))
+        && knots.get(degree) < knots.get(n);
+    if !valid {
+        return Err(Error::Argument);
+    }
+    let pw: Vec<CPoint> = points
+        .iter()
+        .map(|&[x, y, z]| CPoint::new(x, y, z, NOW))
+        .collect();
+    NurbCurve::new(pw, degree, knots.to_vec()).map_err(|_| Error::Argument)
 }
 
 /// `curve` of degree `degree`, and the kernel's certified bound of how far it is from `curve`
@@ -319,10 +411,20 @@ fn multiplicity(knots: &[f64], t: f64) -> usize {
 }
 
 #[cfg(test)]
+// the oracles are closed forms, not ops geometry
+#[allow(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use crate::curve::cv_curve;
     use solidcore::nurbs::knots::Side;
+
+    fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+        [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+    }
+
+    fn norm(a: [f64; 3]) -> f64 {
+        (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt()
+    }
 
     /// Six control points no cubic with fewer knots passes through.
     const WAVE: [[f64; 3]; 6] = [
@@ -685,5 +787,230 @@ mod tests {
             points: WAVE.to_vec(),
         };
         assert_eq!(joints(&short, [0.0, 1.0]), Err(Error::Argument));
+    }
+
+    /// A clamped cubic chain of Bezier pieces over `[t0, t1]` through `m` samples of a curve: knots
+    /// of multiplicity 3 at the joints, a Hermite fit of each piece, as a fine trace is held.
+    fn chain(
+        m: usize,
+        [t0, t1]: [f64; 2],
+        f: impl Fn(f64) -> [f64; 3],
+        df: impl Fn(f64) -> [f64; 3],
+    ) -> Curve {
+        let h = (t1 - t0) / (m - 1) as f64;
+        let mut knots = vec![t0; 4];
+        let mut points = Vec::new();
+        for k in 0..m - 1 {
+            let (a, z) = (t0 + k as f64 * h, t0 + (k + 1) as f64 * h);
+            let (p0, p1, d0, d1) = (f(a), f(z), df(a), df(z));
+            if k == 0 {
+                points.push(p0);
+            }
+            points.push([0, 1, 2].map(|c| p0[c] + d0[c] * h / 3.0));
+            points.push([0, 1, 2].map(|c| p1[c] - d1[c] * h / 3.0));
+            points.push(p1);
+            if k + 1 < m - 1 {
+                knots.extend([z; 3]);
+            }
+        }
+        knots.extend([t1; 4]);
+        Curve::Spline { knots, points }
+    }
+
+    fn helix(t: f64) -> [f64; 3] {
+        let a = 6.0 * std::f64::consts::PI * t;
+        [3.0 * a.cos(), 3.0 * a.sin(), 20.0 * t]
+    }
+
+    fn dhelix(t: f64) -> [f64; 3] {
+        let a = 6.0 * std::f64::consts::PI * t;
+        let w = 6.0 * std::f64::consts::PI;
+        [-3.0 * w * a.sin(), 3.0 * w * a.cos(), 20.0]
+    }
+
+    /// The count of control points and the knots of a spline of any size.
+    fn count_of(c: &Curve) -> usize {
+        match c {
+            Curve::Spline { points, .. } => points.len(),
+            _ => panic!("a spline: {c:?}"),
+        }
+    }
+
+    /// The point of the spline `c` (of any size) at `t`.
+    fn long_at(c: &Curve, t: f64) -> [f64; 3] {
+        let Curve::Spline { knots, points } = c else {
+            panic!("a spline: {c:?}")
+        };
+        let p = long_nurb_of(knots, points)
+            .unwrap()
+            .eval(t, Side::Left)
+            .unwrap();
+        [p.x, p.y, p.z]
+    }
+
+    /// The largest distance of two splines sampled across `[a, z]`.
+    fn gap(x: &Curve, y: &Curve, [a, z]: [f64; 2]) -> f64 {
+        (0..=4000)
+            .map(|i| {
+                let t = a + (z - a) * f64::from(i) / 4000.0;
+                norm(sub(long_at(x, t), long_at(y, t)))
+            })
+            .fold(0.0, f64::max)
+    }
+
+    /// 1400 pieces: 4201 points, past the 4096 the record holds, brought down to the cap by knot
+    /// removal. The sum of the certified bounds is within the budget and bounds the real gap.
+    #[test]
+    fn a_long_chain_comes_down_to_the_cap_within_its_budget() {
+        let c = chain(1401, [0.0, 1.0], helix, dhelix);
+        assert_eq!(count_of(&c), 4201);
+        let budget = 2e-3;
+        let (reduced, bound) = reduce_to_points(&c, 4096, budget, &[]).unwrap();
+        assert!(count_of(&reduced) <= 4096, "{}", count_of(&reduced));
+        assert!(
+            bound > 0.0 && bound <= budget,
+            "bound {bound} budget {budget}"
+        );
+        let real = gap(&c, &reduced, [0.0, 1.0]);
+        assert!(real <= bound, "real {real} bound {bound}");
+        assert!(check_curve(&reduced, &mut Budget::input()).is_ok());
+        // the ends do not move
+        for t in [0.0, 1.0] {
+            assert_eq!(long_at(&c, t), long_at(&reduced, t));
+        }
+    }
+
+    #[test]
+    fn a_spline_within_the_cap_is_returned_as_it_is() {
+        let c = cv_curve(&WAVE, 3).unwrap();
+        assert_eq!(reduce_to_points(&c, 4096, 1e-3, &[]), Ok((c, 0.0)));
+    }
+
+    /// A budget that is not finite, is zero or negative, or is too small to divide (subnormal) is
+    /// refused at once: nothing loops on it, and no number not a number lets a removal through.
+    #[test]
+    fn a_budget_that_is_not_a_usable_number_is_refused_without_a_loop() {
+        let c = chain(301, [0.0, 1.0], helix, dhelix);
+        for budget in [
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            0.0,
+            -1e-3,
+            1e-322,
+            f64::MIN_POSITIVE / 2.0,
+        ] {
+            assert_eq!(
+                reduce_to_points(&c, 600, budget, &[]),
+                Err(Error::Argument),
+                "{budget}"
+            );
+        }
+        // a cap that cannot be reached ends in the refusal too, with a small usable budget
+        let tiny = reduce_to_points(&c, 100, 1e-300, &[]);
+        assert!(matches!(tiny, Err(Error::PastTolerance { .. })), "{tiny:?}");
+    }
+
+    /// A corner (a joint held as many times as the degree, its sides at an angle) is kept whatever
+    /// the budget: the pieces next to it are so short that taking the knot out moves the curve
+    /// less than the budget, and the curve would be smooth there.
+    #[test]
+    fn a_corner_is_kept() {
+        for angle in [60.0_f64, 90.0, 120.0] {
+            let turn = angle.to_radians();
+            // two straight arms of 100 cubic pieces each, meeting at (0.5, 0, 0) at 0.5
+            let end = [0.5 + 0.5 * turn.cos(), 0.5 * turn.sin(), 0.0];
+            let (mut knots, mut points) = (vec![0.0; 4], vec![[0.0; 3]]);
+            let corner = [0.5, 0.0, 0.0];
+            for (from, to, lo) in [([0.0; 3], corner, 0.0), (corner, end, 0.5)] {
+                for k in 0..100 {
+                    let at = |x: f64| [0, 1, 2].map(|c| from[c] + (to[c] - from[c]) * x);
+                    let x = |q: f64| (f64::from(k) + q) / 100.0;
+                    points.extend([at(x(1.0 / 3.0)), at(x(2.0 / 3.0)), at(x(1.0))]);
+                    if k < 99 || lo == 0.0 {
+                        knots.extend([lo + 0.5 * x(1.0); 3]);
+                    }
+                }
+            }
+            knots.extend([1.0; 4]);
+            let c = Curve::Spline { knots, points };
+            assert_eq!(count_of(&c), 601);
+            let (reduced, bound) = reduce_to_points(&c, 400, 1e-2, &[]).unwrap();
+            let Curve::Spline { knots, .. } = &reduced else {
+                panic!("a spline")
+            };
+            assert_eq!(multiplicity(knots, 0.5), 3, "{angle} degrees: {bound}");
+            assert!(count_of(&reduced) <= 400);
+        }
+    }
+
+    /// A curve whose knot domain is wider than the part of it an edge uses: the points at the
+    /// edge's two ends (`keep`) stay where they were, the reduction taking the knots out that
+    /// leave them be.
+    #[test]
+    fn the_points_to_keep_do_not_move() {
+        let (f, df) = (
+            |t: f64| helix((t + 0.2) / 1.4),
+            |t: f64| dhelix((t + 0.2) / 1.4).map(|x| x / 1.4),
+        );
+        let c = chain(1401, [-0.2, 1.2], f, df);
+        let budget = 4e-3;
+        let (reduced, bound) = reduce_to_points(&c, 4096, budget, &[0.0, 1.0]).unwrap();
+        assert!(count_of(&reduced) <= 4096 && bound <= budget);
+        for t in [-0.2, 0.0, 1.0, 1.2] {
+            let moved = norm(sub(long_at(&c, t), long_at(&reduced, t)));
+            assert!(moved <= 1e-9 * budget + 1e-12, "at {t}: {moved}");
+        }
+        assert!(gap(&c, &reduced, [-0.2, 1.2]) <= bound);
+    }
+
+    /// A rational spline over the cap is refused, as the kernel certifies no bound for it; so is
+    /// a cap its degree cannot hold, one the record does not hold, and a spline not clamped.
+    #[test]
+    fn what_cannot_be_reduced_is_refused() {
+        let w = std::f64::consts::FRAC_1_SQRT_2;
+        let arc = Curve::RationalSpline {
+            knots: vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            homogeneous: vec![
+                [10.0, 0.0, 0.0, 1.0],
+                [10.0 * w, 10.0 * w, 0.0, w],
+                [0.0, 10.0, 0.0, 1.0],
+            ],
+        };
+        assert_eq!(reduce_to_points(&arc, 2, 1.0, &[]), Err(Error::Argument));
+        let c = chain(1401, [0.0, 1.0], helix, dhelix);
+        assert_eq!(reduce_to_points(&c, 3, 1.0, &[]), Err(Error::Argument));
+        assert_eq!(reduce_to_points(&c, 4097, 1.0, &[]), Err(Error::Argument));
+        assert_eq!(
+            reduce_to_points(&c, 4096, 1.0, &[f64::NAN]),
+            Err(Error::Argument)
+        );
+        let Curve::Spline { knots, mut points } = c else {
+            panic!("a spline")
+        };
+        let mut open = knots.clone();
+        open[0] = -1.0;
+        let open = Curve::Spline {
+            knots: open,
+            points: points.clone(),
+        };
+        assert_eq!(
+            reduce_to_points(&open, 4096, 1.0, &[]),
+            Err(Error::Argument)
+        );
+        points[7][0] = f64::NAN;
+        let nan = Curve::Spline { knots, points };
+        assert_eq!(reduce_to_points(&nan, 4096, 1.0, &[]), Err(Error::Argument));
+    }
+
+    /// The cap is not reached within a budget too small for it: refused with the sum of the bounds.
+    #[test]
+    fn a_budget_too_small_for_the_cap_is_refused_with_its_bound() {
+        let c = chain(301, [0.0, 1.0], helix, dhelix);
+        let budget = 1e-12;
+        match reduce_to_points(&c, 100, budget, &[]) {
+            Err(Error::PastTolerance { bound }) => assert!(bound <= budget, "{bound}"),
+            other => panic!("{other:?}"),
+        }
     }
 }

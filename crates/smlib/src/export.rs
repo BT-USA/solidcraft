@@ -639,7 +639,7 @@ fn trims(flat: View, n_edgeuses: usize) -> Res<Vec<Option<b::Curve2>>> {
         if o < 2 || n < o {
             return Err(invalid("UV trim order"));
         }
-        if n > knot_removal::MAX_POINTS {
+        if n > long_spline::MAX_POINTS {
             // Longer than the record holds: the trim is left to be computed from its edge on the
             // face's surface (as an analytic face's is), which the export then checks against it.
             cv += n;
@@ -896,7 +896,7 @@ struct Edge {
     /// How SMLib's UV trims of this edge map onto the record's parameter.
     trim_map: TrimMap,
     /// How far the curve was moved to bring it within the record's size limit, proved by
-    /// [`knot_removal`]: added to the edge's tolerance.
+    /// [`long_spline`]: added to the edge's tolerance.
     grown: f64,
 }
 
@@ -979,9 +979,10 @@ fn native_ordered(arrays: &Arrays) -> Res<(b::Brep, Report, Order)> {
         let end = index(idx(at(flat.i(EDGE_VERTICES), 2 * e + 1, "edge vertices")?, n_vertices, "edge vertex")?)?;
         let reversed = a > z;
         // A trace with more control points than the record holds is reduced by knot removal, to
-        // within half the edge's tolerance, which its tolerance then grows by.
+        // within half the edge's tolerance, which its tolerance then grows by. Its ends, at the
+        // edge's interval, are kept where they are.
         let reach = tolerances.edges.as_ref().and_then(|t| t.get(e)).copied().unwrap_or(tolerance);
-        let knot_removal::Reduced { curve, bound: grown } = knot_removal::within_cap(curve, reach / 2.0)?;
+        let long_spline::Reduced { curve, nurbs, bound: grown } = long_spline::within_cap(curve, nurbs, [a, z], reach / 2.0)?;
         edges.push(Edge {
             grown,
             curve,
@@ -1035,7 +1036,8 @@ fn native_ordered(arrays: &Arrays) -> Res<(b::Brep, Report, Order)> {
                     (true, Some(map), Some(trim)) => {
                         // The edge's points at two of its parameters lie within its tolerance.
                         let curve = edge.nurbs.as_ref().unwrap_or(&edge.curve);
-                        let reach = tolerances.edges.as_ref().and_then(|t| t.get(e)).copied().unwrap_or(tolerance);
+                        // The curve is the reduced one: within the edge's tolerance grown by the reduction.
+                        let reach = tolerances.edges.as_ref().and_then(|t| t.get(e)).copied().unwrap_or(tolerance) + edge.grown;
                         let on_edge = |s: f64, t: f64| match (point3(curve, s), point3(curve, t)) {
                             (Some(p), Some(q)) => (0..3).map(|c| (p[c] - q[c]).powi(2)).sum::<f64>().sqrt() <= reach,
                             _ => false,
@@ -1922,7 +1924,7 @@ fn pcurves<'a>(
 fn outer_pcurves(face: &Face, outer: &[(u32, bool)], edges: &[Edge], tolerance: f64) -> Res<Vec<b::Curve2>> {
     let geometry = |e: u32| {
         let edge = edges.get(e as usize)?;
-        Some(EdgeGeometry { curve: edge.nurbs.as_ref().unwrap_or(&edge.curve), interval: edge.interval, tolerance })
+        Some(EdgeGeometry { curve: edge.nurbs.as_ref().unwrap_or(&edge.curve), interval: edge.interval, tolerance: tolerance + edge.grown })
     };
     let given = face.given.first().map(std::slice::from_ref).unwrap_or(&[]);
     let curves = pcurves(face.nurbs.as_ref().unwrap_or(&face.surface), face.domain, &[Loop::Edges(outer.to_vec())], given, geometry, tolerance)?;
@@ -2090,7 +2092,7 @@ fn shift(c: &mut b::Curve2, d: usize, by: f64) {
     }
 }
 
-mod knot_removal;
+mod long_spline;
 
 #[cfg(test)]
 mod tests;
