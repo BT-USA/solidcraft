@@ -3224,7 +3224,7 @@ pub fn calc_end_edge_geom(
         // the smaller limit of the two.
         let first =
             end_refusal_past_side_edge(k, target, corner, solvers, fil_eu, side_eu, other_face);
-        if matches!(first, Ok(None)) {
+        if matches!(first, Ok(None)) && !(misses[0] && misses[1]) {
             // Not the fork's: the rail misses its side edge without
             // running past its far end: the side edge dips towards the round and turns back
             // short of the rail, so the round run on past the vertex never leaves the part
