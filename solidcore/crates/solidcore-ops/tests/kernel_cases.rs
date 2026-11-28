@@ -60,6 +60,7 @@
     clippy::print_stdout,
     clippy::cast_precision_loss
 )] // test
+use solidcore::math::det;
 
 #[path = "../../solidcore/tests/support/solidcraft_fixes.rs"]
 mod solidcraft_fixes;
@@ -3690,7 +3691,7 @@ fn draft_replay_preserves_faces_order_parameters_and_operand() {
         (false, 0.0, -1.0),
     ] {
         let angle = sign * std::f64::consts::PI / 18.0;
-        let tangent = angle.tan();
+        let tangent = det::tan(angle);
         let volume = 24000.0 - 70.0 * tangent * (200.0 - 20.0 * neutral_z)
             + tangent * tangent * (8000.0 / 3.0 - 400.0 * neutral_z + 20.0 * neutral_z * neutral_z);
         let mut input = input.clone();
@@ -4623,6 +4624,22 @@ fn replay_entry(entry: &Path, e: &Value) -> Value {
         "expected": expected,
         "note": note,
     })
+}
+
+/// #655 / #710: the tangent bore seam's two chamfers (the corpus case
+/// `fillets/14283-chamfer-tangent-bore-edges`, #20026) build and grade. Their rails share the
+/// seam's end vertices, which is what sets them apart from the square-to-circle loft's creases:
+/// a trace start rule that misses the seam refuses the case with "Corner Edge Computation
+/// Failure". The whole corpus is slow and ignored; this one case is not.
+#[test]
+fn the_tangent_bore_seam_chamfers_still_build() {
+    session::set_thread_fixes(solidcraft_fixes::solidcraft_fix_names()).unwrap();
+    let entry = corpus().join("fillets/14283-chamfer-tangent-bore-edges.json");
+    let text = std::fs::read_to_string(&entry).unwrap();
+    let e: Value = serde_json::from_str(&text).unwrap();
+    if let Err(stop) = run_case(&entry, &e) {
+        panic!("the bore seam case is refused: {stop:?}");
+    }
 }
 
 /// `KERNEL_CASES_ENTRY`: one entry from outside the corpus, replayed against its failure code
