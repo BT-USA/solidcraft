@@ -599,8 +599,7 @@ impl ApplicationHandler<UserEvent> for Runner<'_> {
             UserEvent::RunLogicNow => self.run_logic(event_loop),
             UserEvent::Repaint { viewport, when, cumulative_pass_nr } => {
                 let mut shared = self.shared.borrow_mut();
-                // A request from a pass that has since been followed by another is already met.
-                if shared.ctx.cumulative_pass_nr_for(viewport) != cumulative_pass_nr {
+                if !repaint_still_wanted(shared.ctx.cumulative_pass_nr_for(viewport), cumulative_pass_nr) {
                     return;
                 }
                 if let Some(v) = shared.viewports.get_mut(&viewport) {
@@ -685,5 +684,24 @@ impl ApplicationHandler<UserEvent> for Runner<'_> {
             app.on_exit();
         }
         self.shared.borrow_mut().painter.destroy();
+    }
+}
+
+/// Whether a repaint asked for during pass `asked_in` still needs a pass, now that `current`
+/// passes have begun. A request made before the pass that is running, or during it (the pass
+/// count moves on as the pass ends, so the request arrives with `current` one ahead), still does:
+/// that is how a control request served in a logic-only pass gets the frame its screenshot waits
+/// for. One from an older pass was met by a later one. This is eframe's rule.
+fn repaint_still_wanted(current: u64, asked_in: u64) -> bool {
+    current == asked_in || asked_in.checked_add(1) == Some(current)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_repaint_asked_for_during_the_last_pass_still_paints() {
+        assert!(super::repaint_still_wanted(7, 7), "asked before the running pass ended");
+        assert!(super::repaint_still_wanted(8, 7), "asked during the pass that just ended");
+        assert!(!super::repaint_still_wanted(9, 7), "a later pass already met it");
     }
 }
