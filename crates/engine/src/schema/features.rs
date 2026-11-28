@@ -2068,6 +2068,12 @@ pub struct ThreadParams {
     /// nominal diameter (a 12 mm hole is M12), else the size whose tap drill it is.
     #[serde(default)]
     pub designation: Option<String>,
+    /// The tolerance class, kept with the thread and listed by `model.threads`: ISO 965-1 for a
+    /// metric thread (`6g` or `4g6g` on a shaft, `6H` or `5H6H` in a hole) and ASME B1.1 for a
+    /// unified one (`2A` on a shaft, `2B` in a hole). It changes no geometry. A class written in
+    /// the designation is read as before; this one wins when both are given. Default: none.
+    #[serde(default)]
+    pub thread_class: Option<String>,
     /// How many grooves, each a turn's starts-th further round: the lead is starts times the
     /// pitch. A whole number from 1 to 8. A designation that gives the lead gives the starts.
     /// Default: 1.
@@ -2148,10 +2154,10 @@ pub struct ThreadFeatureResult {
     pub feature: u64,
     /// The new feature's name.
     pub name: String,
-    /// The cosmetic thread as `model.threads` lists it (the first face's, with `faces`), or `null`
-    /// for a modelled thread.
+    /// The thread as `model.threads` lists it (the first face's, with `faces`); `modeled` is true
+    /// when it is cut into the body.
     pub thread: Option<super::inspect::ModelThread>,
-    /// With `faces`: each face's cosmetic thread, in the order given (empty for a modelled thread).
+    /// With `faces`: each face's thread, in the order given.
     /// Left out with `face`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub threads: Option<Vec<super::inspect::ModelThread>>,

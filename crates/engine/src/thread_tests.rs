@@ -242,8 +242,10 @@ fn a_metric_class_changes_no_geometry() {
         run(&mut s, "solid.thread", json!({"face":face,"designation":designation,"modeled":modeled}));
         let state = s.model.state();
         let body = solidcraft_kernel::encode_native_body(&state.bodies[0].body).unwrap();
-        // A modelled thread is the groove itself and leaves no cosmetic marking.
-        assert_eq!(state.threads.len(), usize::from(!modeled));
+        // A modelled thread is the groove itself: its record is marked modelled, and its numbers
+        // do not depend on the class.
+        assert_eq!(state.threads.len(), 1);
+        assert_eq!(state.threads[0].modeled, modeled);
         let marking = state.threads.first().map(|t| {
             let numbers =
                 [t.major_diameter, t.radius, t.pitch, t.axis_point.x, t.axis_point.y, t.axis_point.z, t.axis.x, t.axis.y, t.axis.z, t.start, t.end]

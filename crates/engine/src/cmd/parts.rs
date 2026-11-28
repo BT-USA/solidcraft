@@ -2612,7 +2612,7 @@ mod tests {
         let (plain, recorded, r) = screw("cosmetic");
         assert_eq!((recorded, r["thread"].as_str()), (1, Some("cosmetic")), "{r}");
         let (cut, modeled, r) = screw("modeled");
-        assert_eq!((modeled, r["thread"].as_str()), (0, Some("modeled")), "{r}");
+        assert_eq!((modeled, r["thread"].as_str()), (1, Some("modeled")), "{r}");
         // M6: the external minor diameter is d - 1.226869 P = 4.773.
         let ring = std::f64::consts::PI / 4.0 * (36.0 - 4.773 * 4.773) * 20.0;
         assert!(plain - cut > ring / 3.0 && plain - cut < ring, "{plain} - {cut} against a ring of {ring}");

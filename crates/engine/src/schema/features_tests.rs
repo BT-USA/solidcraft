@@ -2045,7 +2045,9 @@ fn thread_replies_match_its_output_schema() {
         assert!(conforms(schema, schema, &r), "{r} doesn't match {schema}");
         assert!(r.get("param_warnings").is_none(), "{p}: {r}");
         assert_eq!(r.get("threads").is_some(), p.get("faces").is_some(), "{r}");
-        assert_eq!(r["thread"].is_null(), p.get("modeled") == Some(&json!(true)), "{r}");
+        // Every thread is listed; a modelled one is marked so.
+        assert!(!r["thread"].is_null(), "{r}");
+        assert_eq!(r["thread"]["modeled"] == json!(true), p.get("modeled") == Some(&json!(true)), "{r}");
     }
     // Two faces give two threads, in the order given, each on its own body.
     let r = shafts()

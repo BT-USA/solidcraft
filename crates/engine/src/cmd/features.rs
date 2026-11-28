@@ -6388,7 +6388,11 @@ fn thread(s: &mut Session, p: &Value) -> Result<Value> {
         target_bodies,
         single_face_selection,
     };
-    let v = add_feature(s, p, kind)?;
+    let v = add_feature(s, p, kind).map_err(|e| match e {
+        // A class that does not fit the face it lands on is a wrong parameter, as one that does not fit the form is.
+        EngineError::Other(why) if why.contains("`thread_class`") => bad(cmd, &why),
+        e => e,
+    })?;
     let st = s.model.state();
     let feature = v.get("feature").and_then(Value::as_u64).ok_or_else(|| EngineError::Internal(cmd.into(), "the new feature has no id".into()))?;
     let name = v.get("name").and_then(Value::as_str).ok_or_else(|| EngineError::Internal(cmd.into(), "the new feature has no name".into()))?;

@@ -291,6 +291,10 @@ pub struct ModelThread {
     /// The authored tolerance class, when specified.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thread_class: Option<String>,
+    /// Whether the thread is cut into the body (a groove), rather than only marked. Left out
+    /// when it is cosmetic.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub modeled: bool,
     /// Its major diameter (mm).
     pub major_diameter: f64,
     /// The radius of the cylindrical face it is on (mm).
@@ -355,6 +359,7 @@ impl From<&solidcraft_doc::ThreadInfo> for ModelThread {
             body: t.body.clone(),
             designation: t.designation.clone(),
             thread_class: t.thread_class.clone(),
+            modeled: t.modeled,
             major_diameter: t.major_diameter,
             radius: t.radius,
             pitch: t.pitch,
