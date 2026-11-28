@@ -693,7 +693,7 @@ impl FilletSession<'_> {
             };
             let chamfer = {
                 // a face that bends in the section: the sizes are measured along its curve
-                // (#1023), not on the straight section the planar offsets read
+                //, not on the straight section the planar offsets read
                 let own = wedges.get(index).copied().unwrap_or(f64::NAN);
                 let interval = self.objects.target.edge(id)?.interval;
                 let target: &mut crate::Brep = &mut *self.objects.target;

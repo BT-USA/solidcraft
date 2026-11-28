@@ -22,7 +22,7 @@ fn holder() -> Body {
 
 /// Integrate the removed horizontal strips analytically across the capsule's width, then
 /// use Simpson integration in height. The chamfer's distance is measured along each face
-/// (#1023): the top is a plane meeting the cutter's cylinder (radius 60 about the axis y = 70
+/// - the top is a plane meeting the cutter's cylinder (radius 60 about the axis y = 70
 /// at the top, depth 0) at y = 10; the foot on the top is `distance` from there, at
 /// y = 10 - distance, and the foot on the cylinder is `distance` of arc round it, a turn
 /// `distance / 60`: y = 70 - 60 cos(turn) at depth 60 sin(turn). The bevel is the straight line

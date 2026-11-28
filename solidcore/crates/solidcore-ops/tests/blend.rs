@@ -6274,7 +6274,7 @@ fn both_flat_face_loops_of_a_notched_half_torus_round() {
 /// The round is fixed by where the circle's and the line's offsets by `r` meet, the centre
 /// (x, r) with |x - a| = sqrt((b - r)^2 - r^2): the circle about it.
 ///
-/// The chamfer's distance is measured along each face (#1023): `r` along the line from the
+/// The chamfer's distance is measured along each face: `r` along the line from the
 /// rim, to `(rim - side r, 0)`, and `r` of arc round the tube's circle, a turn of `r / b`, to
 /// `(a + side b cos(r / b), b sin(r / b))`. The chamfer joins the two feet, a straight line
 /// in the meridian.
@@ -8214,7 +8214,7 @@ fn capsule_section(plane: f64, round: f64, ball: bool) -> (f64, f64) {
     (area, moment)
 }
 
-/// [`capsule_section`] for a chamfer whose distances are measured along the faces (#1023):
+/// [`capsule_section`] for a chamfer whose distances are measured along the faces:
 /// `on_plane` along the cut face from the edge (5, 0), to the foot (`5 - on_plane`, 0), and
 /// `on_arc` of arc round the circle of radius 5, a turn `th = on_arc / 5`, to the foot
 /// 5 (cos th, sin th). The chamfer takes the triangle of the edge and the two feet, with the
@@ -8246,7 +8246,7 @@ const HALF_CAPSULE: f64 = 0.5 * PI * 25.0 * 10.0 + 2.0 * PI * 125.0 / 3.0;
 /// turn, and a chamfer at a wedge of pi has no definition. A sphere's normal is now enclosed
 /// by its definition, `S - c`, and every arc is bounded at a right angle. At that wedge the
 /// size is the setback along the cut face and the second is arc length round the curved faces
-/// (#1023). The chamfer takes off the section of [`capsule_chamfer_section`] along the two
+/// - The chamfer takes off the section of [`capsule_chamfer_section`] along the two
 /// lines (10 each) and, by Pappus, turned through pi about each sphere's centre.
 #[test]
 fn an_unequal_chamfer_of_a_half_capsule_s_outline_is_measured_at_a_right_angle() {
@@ -8517,7 +8517,7 @@ fn a_full_round_whose_rails_meet_along_part_of_one_of_them() {
 /// 3D. Each end is the section in the plane through the pole square to the edge, so the blend
 /// takes off [`capsule_section`] along the line (10) and, by Pappus, turned through pi/2 about
 /// each sphere's centre. An equal chamfer of 1 is 1 along the cut face and 1 of arc round the
-/// circle ([`capsule_chamfer_section`], #1023).
+/// circle ([`capsule_chamfer_section`]).
 #[test]
 fn a_chamfer_or_round_of_a_half_capsule_s_outline_from_pole_to_pole_builds() {
     all_fixes();

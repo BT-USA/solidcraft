@@ -2,7 +2,7 @@
 //!
 //! The meridian's circle has centre (-16,33), radius sqrt(1690), between z=30 and
 //! z=60. The upper line is r=15+0.15*(z-60). Equal setbacks 2.995, along the line and as
-//! arc on the circle, give the contact points (#1023); the chamfer joins them by a straight
+//! arc on the circle, give the contact points; the chamfer joins them by a straight
 //! segment.
 //! Its revolution is a cone. Volume below is an independent meridian integral.
 #![allow(
@@ -68,7 +68,7 @@ fn base_volume() -> f64 {
 }
 
 fn chamfer_contacts() -> [[f64; 2]; 2] {
-    // The setbacks are measured along each face (#1023): 2.995 of arc on the circle and 2.995
+    // The setbacks are measured along each face: 2.995 of arc on the circle and 2.995
     // along the line, from their corner (15, 60) (the circle at z = 60: -16 + sqrt(1690 - 27^2)).
     // Neither a kernel result nor the old cached volume.
     let d = 2.995;

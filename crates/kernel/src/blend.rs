@@ -1928,7 +1928,7 @@ mod tests {
     const BOSS_EDGE: Vec3 = Vec3::new(26.796894836538296, -10.5, -12.0);
 
     /// The chamfer `d` of the boss's base edge on the rounded plate, measured along each face
-    /// (#1023): `d` along the plate's front face (the plane y = -10.5) and `d` of arc round the
+    /// - `d` along the plate's front face (the plane y = -10.5) and `d` of arc round the
     /// boss's circle. Its contact on the plane `p` and on the boss's circle `q` (in xy), and the
     /// area of its section between the plane, the chamfer's line from `p` to `q` and the circle.
     fn boss_chamfer_section(d: f64) -> ((f64, f64), (f64, f64), f64) {
@@ -1955,7 +1955,7 @@ mod tests {
 
     /// The chamfer `plate` along the plane with its line at `angle` to the plane: the line leaves
     /// the plane's foot back towards the edge and meets the boss's circle where [`boss_section_by_turn`]'s
-    /// turn says (#1023).
+    /// turn says.
     fn boss_chamfer_angle_section(plate: f64, angle: f64) -> ((f64, f64), (f64, f64), f64) {
         let (cx, cy, big, yp): (f64, f64, f64, f64) = (14.388009991673611, -14.038301415494109, 12.90348790056394, -10.5);
         let ex = cx + (big * big - (yp - cy).powi(2)).sqrt();
@@ -1975,7 +1975,7 @@ mod tests {
         -16.0 + (256.0 - (x - 32.5).powi(2)).sqrt()
     }
 
-    /// The boss's base edge chamfered 5.75, measured along each face (#1023): its contact line on
+    /// The boss's base edge chamfered 5.75, measured along each face: its contact line on
     /// the plate's front face (5.75 from the edge at x 26.797, so at x 32.547) runs past x 32.5, where the face's top edge turns into the r16 corner's arc, and SMLib refuses it.
     /// Carried on, the chamfer's contact line on the plate ends on the arc, its top edge meets
     /// the corner at x 32.5, and its material is its section over the boss's 24 mm less the
@@ -2701,7 +2701,7 @@ mod tests {
 
     /// On the boss's base edge the distance is along the plate and the angle is from it:
     /// the chamfer's line leaves the plate's foot at the angle to the plate and meets the boss's
-    /// circle where [`boss_chamfer_angle_section`] says (#1023; a line steeper than the circle's
+    /// circle where [`boss_chamfer_angle_section`] says (a line steeper than the circle's
     /// tangent from the foot, as 60° at 5, never meets it and is refused); 5 at 30°, which fits, is
     /// SMLib's body and that section.
     /// At 45°, 5.70 is the largest that fits the plate's face (the face ends 5.7031 from the edge)
@@ -3904,7 +3904,7 @@ mod tests {
         }
     }
 
-    /// A pin turned about the x axis (#1023): radius 2 for x in [-6, 2 + sqrt 5], then a spherical
+    /// A pin turned about the x axis: radius 2 for x in [-6, 2 + sqrt 5], then a spherical
     /// end of radius 3 about (2, 0, 0) to x = 5. The cylinder and the sphere meet in a circle at
     /// x = 2 + sqrt 5, 131.81 degrees inside the material.
     fn sphere_ended_pin() -> Body {
@@ -3965,7 +3965,7 @@ mod tests {
     }
 
     /// Equal distances on a cylinder meeting a sphere are measured along each face's own curve
-    /// (#1023): 0.3 along the cylinder and 0.3 along the sphere's arc, 0.4314074 off the pin
+    /// - 0.3 along the cylinder and 0.3 along the sphere's arc, 0.4314074 off the pin
     /// (the issue's closed form), where the planar offsets took 0.5731503. 0.1 takes 0.0472649.
     #[test]
     fn an_equal_chamfer_of_a_cylinder_meeting_a_sphere_is_measured_along_both_faces() {
@@ -3991,7 +3991,7 @@ mod tests {
 
     /// A distance and an angle with the distance along the cylinder (0.3, line at 30 degrees to
     /// it, which meets the sphere at x = 4.4824) takes 0.5839245 off the pin, whichever way the
-    /// sides are flipped to put the distance there (#1023); the distance along the sphere's arc
+    /// sides are flipped to put the distance there; the distance along the sphere's arc
     /// with the angle to the sphere's tangent there takes what its own section does.
     #[test]
     fn a_distance_and_angle_chamfer_of_a_cylinder_meeting_a_sphere_is_measured_on_the_faces() {
@@ -4026,7 +4026,7 @@ mod tests {
     }
 
     /// The same two distances asked of the two faces unequal (0.3 on the cylinder, 0.2 on the
-    /// sphere's arc), both ways round (#1023).
+    /// sphere's arc), both ways round.
     #[test]
     fn a_two_distance_chamfer_of_a_cylinder_meeting_a_sphere_is_measured_on_the_faces() {
         let pin = sphere_ended_pin();
@@ -4050,7 +4050,7 @@ mod tests {
     }
 
     /// A sphere of radius 3 cut flat at z = 2 (revolved about z), the rim of the flat on the
-    /// sphere chamfered by equal distances (#1023): 0.3 along the plane and 0.3 along the
+    /// sphere chamfered by equal distances: 0.3 along the plane and 0.3 along the
     /// sphere's arc. The section is the plane's foot, the sphere's foot and the arc between
     /// the sphere's foot and the rim, `pi` times the integral of `r^2 dz` round it.
     #[test]
@@ -4088,7 +4088,7 @@ mod tests {
 
     /// The lens where two balls overlap (radius 3 about the origin, radius 2.5 about (4, 0, 0),
     /// turned about the x axis), its rim chamfered by equal distances along both spheres' arcs
-    /// (#1023). The section is the rim `E`, the arc on each sphere to its foot (angles
+    /// - The section is the rim `E`, the arc on each sphere to its foot (angles
     /// `phi - d / R` and `phi + d / R` about the centres), and the chord between the feet:
     /// `pi` times the integral of `r^2 dx` round it is what the chamfer takes off.
     #[test]

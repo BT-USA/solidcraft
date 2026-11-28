@@ -1,4 +1,4 @@
-//! A chamfer's offsets on faces that bend in the section (#1023): the offsets `r_1`, `r_2`
+//! A chamfer's offsets on faces that bend in the section: the offsets `r_1`, `r_2`
 //! whose point has its feet at the asked setbacks measured along the faces' own curves.
 //!
 //! [`ChamferDefinition::offsets`](crate::surface::procedural_blend::chamfer::ChamferDefinition)
@@ -12,7 +12,7 @@
 //! point `P = F_i + r_i m_i(d_i)`, `m_i` the circle's normal towards its centre; two
 //! equations for two offsets, solved exactly.
 //!
-//! Not upstream (solidcore's, #1023). Deviations: none. No recursion.
+//! Not upstream (solidcore's). Deviations: none. No recursion.
 
 use crate::error::{Result, SolidError};
 use crate::surface::procedural_blend::chamfer::ChamferSize;
