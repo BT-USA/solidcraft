@@ -5143,11 +5143,19 @@ pub(crate) fn pick_through(app: &SolveApp, proj: &Proj, pos: Pos2) -> Vec<Hit> {
     if !pos.x.is_finite() || !pos.y.is_finite() || !proj.rect.contains(pos) {
         return Vec::new();
     }
+    // Single-hole placement offers snap points and the face under them.
+    let probe_inner_faces = !crate::hole_place::placing(app);
     let mut out = Vec::new();
     for (x, y) in [(0.0, 0.0), (6.0, 0.0), (-6.0, 0.0), (0.0, 6.0), (0.0, -6.0), (4.0, 4.0), (-4.0, 4.0), (4.0, -4.0), (-4.0, -4.0)] {
         // Only the ray under the pointer probes the inside of solids. The eight neighbours
         // keep the normal pick tolerance for edges, points and small nearby profiles.
-        let options = PickOptions { all: true, include_midpoints: true, through: true, inner_faces: x == 0.0 && y == 0.0, ..PickOptions::default() };
+        let options = PickOptions {
+            all: true,
+            include_midpoints: true,
+            through: true,
+            inner_faces: probe_inner_faces && x == 0.0 && y == 0.0,
+            ..PickOptions::default()
+        };
         for hit in pick_hits(app, proj, pos + vec2(x, y), options).unwrap_or_default() {
             if !out.iter().any(|previous| same_target(previous, &hit)) {
                 out.push(hit);
